@@ -33,9 +33,6 @@ final class CompositionRenderer {
     static let outputWidth = 2560
     static let outputHeight = 1440
 
-    /// Gap between the model and the backdrop, matching the live scene.
-    private static let backdropGap: Float = 0.9
-
     /// - Parameter scene: The base with its objects. Rendered at its current world pose.
     func render(scene: Entity, background: CGImage, viewerPosition: SIMD3<Float>) async throws -> CGImage {
         guard let device = MTLCreateSystemDefaultDevice() else { throw RenderError.metalUnavailable }
@@ -73,7 +70,7 @@ final class CompositionRenderer {
 
         let backdrop = try await makeBackdrop(
             image: background,
-            distanceFromCamera: distance + radius + Self.backdropGap,
+            distanceFromCamera: distance + radius + BackdropLayout.gapBehindTarget,
             halfFOV: halfFOV,
             frameAspect: aspect,
             cameraPosition: cameraPosition,
@@ -137,17 +134,26 @@ final class CompositionRenderer {
         var material = UnlitMaterial(applyPostProcessToneMap: false)
         material.color = .init(texture: .init(texture))
 
-        let frameHeight = 2 * distanceFromCamera * tan(halfFOV)
-        let frameWidth = frameHeight * frameAspect
+        // Lay the plane out exactly as in the live scene (same size, raised by the same
+        // lift), so the same part of the image sits behind the scene.
         let imageAspect = Float(image.width) / Float(max(image.height, 1))
-        let planeSize: SIMD2<Float> = imageAspect > frameAspect
-            ? [frameHeight * imageAspect, frameHeight]
-            : [frameWidth, frameWidth / imageAspect]
+        let liveSize = BackdropLayout.size(forAspect: imageAspect)
+        let half = liveSize / 2
+        let lift = BackdropLayout.lift(forHeight: liveSize.y)
 
-        // Slightly oversized so no edge can show at the frame border.
-        let plane = ModelEntity(mesh: .generatePlane(width: planeSize.x * 1.02, height: planeSize.y * 1.02),
+        // If that plane doesn't fill the frame, grow it around the point behind the scene
+        // (where the camera looks) until it does, so no edge shows.
+        let frameHalfHeight = distanceFromCamera * tan(halfFOV) * 1.02
+        let frameHalfWidth = frameHalfHeight * frameAspect
+        let scale = max(1,
+                        frameHalfWidth / half.x,
+                        frameHalfHeight / (half.y - lift),
+                        frameHalfHeight / (half.y + lift))
+
+        let plane = ModelEntity(mesh: .generatePlane(width: liveSize.x * scale, height: liveSize.y * scale),
                                 materials: [material])
-        plane.position = cameraPosition + cameraOrientation.act([0, 0, -distanceFromCamera])
+        let behindScene = cameraPosition + cameraOrientation.act([0, 0, -distanceFromCamera])
+        plane.position = behindScene + cameraOrientation.act([0, lift * scale, 0])
         plane.orientation = cameraOrientation
         return plane
     }

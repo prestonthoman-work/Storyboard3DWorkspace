@@ -23,8 +23,6 @@ final class WorkspaceScene {
     /// Where the base floats when no table is available: about 1 m ahead, near table height.
     private static let floatingBasePosition = SIMD3<Float>(0, 0.85, -1.0)
 
-    private static let backdropHeight: Float = 1.9
-    private static let backdropMaxWidth: Float = 4.5
 
     let root = Entity()
     let baseAnchor = Entity()
@@ -248,15 +246,12 @@ final class WorkspaceScene {
         var material = UnlitMaterial(applyPostProcessToneMap: false)
         material.color = .init(texture: .init(texture))
 
-        let aspect = Float(image.width) / Float(max(image.height, 1))
-        var height = Self.backdropHeight
-        var width = height * aspect
-        if width > Self.backdropMaxWidth {
-            width = Self.backdropMaxWidth
-            height = width / aspect
+        let size = BackdropLayout.size(forAspect: Float(image.width) / Float(max(image.height, 1)))
+        backdrop.model = ModelComponent(mesh: .generatePlane(width: size.x, height: size.y), materials: [material])
+        if var layout = backdrop.components[ViewerFacingBackdropComponent.self] {
+            layout.lift = BackdropLayout.lift(forHeight: size.y)
+            backdrop.components.set(layout)
         }
-
-        backdrop.model = ModelComponent(mesh: .generatePlane(width: width, height: height), materials: [material])
         backdrop.isEnabled = true
     }
 }
