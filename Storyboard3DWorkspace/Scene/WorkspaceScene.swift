@@ -228,9 +228,13 @@ final class WorkspaceScene {
                 }
             }
         }
+        // Stay inside the base, whatever size it currently is.
+        let halfWidth = objectsContainer.components[GravitySurfaceComponent.self]?.baseHalfWidth ?? 0.3
+        let reach = max(halfWidth - 0.04, 0)
         let taken = objects.map { SIMD2($0.position.x, $0.position.z) }
         let spot = candidates.first { candidate in
-            taken.allSatisfy { simd_distance($0, candidate) > spacing * 0.7 }
+            abs(candidate.x) <= reach && abs(candidate.y) <= reach
+                && taken.allSatisfy { simd_distance($0, candidate) > spacing * 0.7 }
         } ?? [0, 0]
         return [spot.x, 0, spot.y]
     }

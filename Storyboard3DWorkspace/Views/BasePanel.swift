@@ -52,12 +52,7 @@ struct BasePanel: View {
                 }
             }
 
-            Picker("Size", selection: $appModel.baseSize) {
-                ForEach(BaseSize.allCases) { size in
-                    Text(size.label).tag(size)
-                }
-            }
-            .pickerStyle(.segmented)
+            BaseSizeControl()
 
             Spacer(minLength: 0)
         }
@@ -65,6 +60,41 @@ struct BasePanel: View {
 
     private func generate() {
         Task { await appModel.generateBase() }
+    }
+}
+
+private struct BaseSizeControl: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        @Bindable var appModel = appModel
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Size")
+                    .font(.headline)
+                Text("\(Int(appModel.baseWidth)) cm")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if appModel.tablePlacement == .onTable {
+                    Button("Fit to Table") { appModel.fitBaseToTable() }
+                        .buttonStyle(.bordered)
+                        .help("Size the base to fill most of the table")
+                }
+            }
+
+            Slider(value: $appModel.baseWidth, in: BaseSizeLimits.range, step: BaseSizeLimits.step) {
+                Text("Base size")
+            } minimumValueLabel: {
+                Text("\(Int(BaseSizeLimits.range.lowerBound))")
+            } maximumValueLabel: {
+                Text("\(Int(BaseSizeLimits.range.upperBound))")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityValue("\(Int(appModel.baseWidth)) centimeters")
+        }
     }
 }
 

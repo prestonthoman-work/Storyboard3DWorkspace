@@ -34,7 +34,7 @@ class AppModel {
         let workspace = WorkspaceScene()
         self.workspace = workspace
         self.animator = KeyframeAnimator(scene: workspace)
-        workspace.setBase(BaseTemplateBuilder.make(.grass), size: baseSize.meters)
+        workspace.setBase(BaseTemplateBuilder.make(.grass), size: baseMeters)
     }
 
     // MARK: Table placement
@@ -133,8 +133,20 @@ class AppModel {
     }
 
     private(set) var base = BaseSummary(name: BaseTemplate.grass.name, origin: .template(.grass))
-    var baseSize: BaseSize = .medium {
-        didSet { workspace.setBaseSize(baseSize.meters) }
+    /// Width of the square base, in centimeters.
+    var baseWidth: Double = BaseSizeLimits.defaultWidth {
+        didSet { workspace.setBaseSize(baseMeters) }
+    }
+    private var baseMeters: Float { Float(baseWidth) / 100 }
+
+    /// Sizes the base to fill most of the table it's on, leaving a margin at the edges.
+    func fitBaseToTable() {
+        guard let anchored = anchoredTable,
+              let table = SpatialTrackingService.shared.tables[anchored.id]
+        else { return }
+        let fitted = Double(min(table.width, table.depth)) * 100 * 0.9
+        let stepped = (fitted / BaseSizeLimits.step).rounded(.down) * BaseSizeLimits.step
+        baseWidth = min(max(stepped, BaseSizeLimits.range.lowerBound), BaseSizeLimits.range.upperBound)
     }
     var basePrompt = ""
     private(set) var isGeneratingBase = false
@@ -146,7 +158,7 @@ class AppModel {
     }
 
     func applyBaseTemplate(_ template: BaseTemplate) {
-        workspace.setBase(BaseTemplateBuilder.make(template), size: baseSize.meters)
+        workspace.setBase(BaseTemplateBuilder.make(template), size: baseMeters)
         base = BaseSummary(name: template.name, origin: .template(template))
         baseNote = nil
         baseError = nil
@@ -161,7 +173,7 @@ class AppModel {
 
         do {
             let model = try await generationService.generateBase(prompt: prompt)
-            workspace.setBase(model.entity, size: baseSize.meters)
+            workspace.setBase(model.entity, size: baseMeters)
             base = BaseSummary(name: model.displayName, origin: .generated(model.source))
             baseNote = model.note
         } catch {

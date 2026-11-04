@@ -52,27 +52,9 @@ enum BaseTemplate: String, CaseIterable, Identifiable {
     }
 }
 
-enum BaseSize: String, CaseIterable, Identifiable {
-    case small
-    case medium
-    case large
-
-    var id: String { rawValue }
-
-    /// Width of the square base, in meters.
-    var meters: Float {
-        switch self {
-        case .small: 0.4
-        case .medium: 0.6
-        case .large: 0.8
-        }
-    }
-
-    var label: String {
-        switch self {
-        case .small: "40 cm"
-        case .medium: "60 cm"
-        case .large: "80 cm"
-        }
-    }
+/// Limits for the square base's width, in centimeters.
+enum BaseSizeLimits {
+    static let range: ClosedRange<Double> = 20...150
+    static let step: Double = 5
+    static let defaultWidth: Double = 60
 }
