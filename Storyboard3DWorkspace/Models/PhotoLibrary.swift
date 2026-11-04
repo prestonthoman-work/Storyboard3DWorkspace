@@ -24,6 +24,12 @@ struct CapturedPhoto: Identifiable {
     let jpegData: Data
     let thumbnail: UIImage
     var assignment: Assignment
+    /// Where the camera was, so the photo can be retaken or re-rendered. Nil for photos
+    /// taken before angles were saved.
+    var camera: CaptureCamera?
+    var lighting: LightingPreset = .studio
+    /// Where the backdrop sat when the photo was taken, so a re-render matches.
+    var backdropPose: CodableTransform?
 
     var keyframeID: Keyframe.ID? {
         if case .keyframe(let id) = assignment { id } else { nil }
@@ -46,22 +52,55 @@ final class PhotoLibrary {
     @ObservationIgnored private var decodeOrder: [CapturedPhoto.ID] = []
 
     @discardableResult
-    func add(_ image: CGImage, lens: CaptureLens, keyframe: Keyframe.ID?) -> CapturedPhoto? {
-        let full = UIImage(cgImage: image)
-        guard let data = full.jpegData(compressionQuality: 0.92) else { return nil }
-
-        let photo = CapturedPhoto(
-            lens: lens,
-            jpegData: data,
-            thumbnail: Self.makeThumbnail(full),
-            assignment: keyframe.map { .keyframe($0) } ?? .unassigned
-        )
+    func add(_ image: CGImage, lens: CaptureLens, keyframe: Keyframe.ID?, camera: CaptureCamera? = nil,
+             lighting: LightingPreset = .studio, backdropPose: CodableTransform? = nil) -> CapturedPhoto? {
+        guard let photo = makePhoto(image, lens: lens, assignment: keyframe.map { .keyframe($0) } ?? .unassigned,
+                                    camera: camera, lighting: lighting, backdropPose: backdropPose)
+        else { return nil }
         photos.append(photo)
-        archive[photo.id] = photo
         // A keyframe's first photo becomes its primary until another is chosen.
         if let keyframe, primaryPhotoIDs[keyframe] == nil {
             primaryPhotoIDs[keyframe] = photo.id
         }
+        return photo
+    }
+
+    /// Swaps in a new render of a photo: same keyframe and primary status, new image.
+    /// The old version stays in the archive so undo can bring it back.
+    @discardableResult
+    func replace(_ old: CapturedPhoto, with image: CGImage, camera: CaptureCamera? = nil,
+                 lighting: LightingPreset? = nil) -> CapturedPhoto? {
+        guard let index = photos.firstIndex(where: { $0.id == old.id }) else { return nil }
+        let newCamera = camera ?? old.camera
+        guard let photo = makePhoto(image, lens: newCamera?.lens ?? old.lens, assignment: old.assignment,
+                                    camera: newCamera, lighting: lighting ?? old.lighting,
+                                    backdropPose: old.backdropPose)
+        else { return nil }
+        photos[index] = photo
+        if let keyframe = old.keyframeID, primaryPhotoIDs[keyframe] == old.id {
+            primaryPhotoIDs[keyframe] = photo.id
+        }
+        return photo
+    }
+
+    /// Detaches one photo from its keyframe (it stays in the library).
+    func detach(_ photo: CapturedPhoto) {
+        guard let index = photos.firstIndex(where: { $0.id == photo.id }), let keyframe = photos[index].keyframeID else { return }
+        photos[index].assignment = .removed
+        if primaryPhotoIDs[keyframe] == photo.id {
+            primaryPhotoIDs[keyframe] = photos(for: keyframe).first?.id
+        }
+    }
+
+    private func makePhoto(_ image: CGImage, lens: CaptureLens, assignment: CapturedPhoto.Assignment,
+                           camera: CaptureCamera?, lighting: LightingPreset,
+                           backdropPose: CodableTransform?) -> CapturedPhoto? {
+        let full = UIImage(cgImage: image)
+        guard let data = full.jpegData(compressionQuality: 0.92) else { return nil }
+        let photo = CapturedPhoto(lens: lens, jpegData: data, thumbnail: Self.makeThumbnail(full),
+                                  assignment: assignment, camera: camera, lighting: lighting,
+                                  backdropPose: backdropPose)
+        archive[photo.id] = photo
         remember(full, for: photo.id)
         return photo
     }

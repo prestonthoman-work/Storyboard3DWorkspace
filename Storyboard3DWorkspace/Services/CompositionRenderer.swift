@@ -6,6 +6,13 @@
 import CoreGraphics
 import Metal
 import RealityKit
+#if canImport(UIKit)
+import UIKit
+private typealias PlatformColor = UIColor
+#else
+import AppKit
+private typealias PlatformColor = NSColor
+#endif
 
 /// Renders the staged composition (base, objects, and backdrop) to a flat image, offscreen,
 /// the way a Blender camera renders a scene.
@@ -36,17 +43,33 @@ final class CompositionRenderer {
     ///   - backdrop: The live backdrop plane, copied at its current world pose.
     ///   - background: The backdrop image, used if a frame-filling backdrop must be built instead.
     ///   - camera: Where to render from.
+    ///   - lighting: The lighting mood.
     func render(scene: Entity, backdrop: ModelEntity, background: CGImage,
-                camera captureCamera: CaptureCamera) async throws -> CGImage {
+                camera captureCamera: CaptureCamera, lighting: LightingPreset = .studio) async throws -> CGImage {
+        try await render(snapshot: Self.snapshot(of: scene), backdrop: backdrop, backdropPose: nil,
+                         background: background, camera: captureCamera, lighting: lighting)
+    }
+
+    /// A render-ready copy of the staged scene at its current world pose, minus
+    /// interaction-only pieces. Taking it is instant, so the live scene can be posed,
+    /// copied, and put back before anything is drawn.
+    static func snapshot(of scene: Entity) -> Entity {
+        let subject = scene.clone(recursive: true)
+        subject.findEntity(named: WorkspaceScene.selectionIndicatorName)?.removeFromParent()
+        stripInteraction(from: subject)
+        subject.transform = Transform(matrix: scene.transformMatrix(relativeTo: nil))
+        return subject
+    }
+
+    /// - Parameters:
+    ///   - snapshot: From `snapshot(of:)`. Not modified, so it can be rendered again.
+    ///   - backdropPose: Where to put the backdrop; nil uses the live backdrop's position.
+    func render(snapshot: Entity, backdrop: ModelEntity, backdropPose: Transform?, background: CGImage,
+                camera captureCamera: CaptureCamera, lighting: LightingPreset) async throws -> CGImage {
         guard let device = MTLCreateSystemDefaultDevice() else { throw RenderError.metalUnavailable }
 
         let renderer = try RealityRenderer()
-
-        // A copy of the staged scene, minus interaction-only pieces.
-        let subject = scene.clone(recursive: true)
-        subject.findEntity(named: WorkspaceScene.selectionIndicatorName)?.removeFromParent()
-        Self.stripInteraction(from: subject)
-        subject.transform = Transform(matrix: scene.transformMatrix(relativeTo: nil))
+        let subject = snapshot.clone(recursive: true)
 
         let bounds = subject.visualBounds(relativeTo: nil)
         let center = bounds.isEmpty ? subject.position : bounds.center
@@ -62,15 +85,18 @@ final class CompositionRenderer {
         let backdropCopy = try await makeBackdrop(
             live: backdrop,
             image: background,
+            pose: backdropPose,
             camera: captureCamera,
             sceneCenter: center,
-            sceneRadius: radius
+            sceneRadius: radius,
+            tint: lighting.backdropTint
         )
 
-        renderer.entities.append(contentsOf: [subject, backdropCopy, camera] + Self.studioLights(camera: captureCamera, center: center))
+        renderer.entities.append(contentsOf: [subject, backdropCopy, camera]
+                                 + Self.lights(for: lighting, camera: captureCamera, center: center))
         renderer.activeCamera = camera
-        renderer.lighting.resource = try await EnvironmentResource(equirectangular: Self.makeStudioEnvironment())
-        renderer.lighting.intensityExponent = 0.4
+        renderer.lighting.resource = try await EnvironmentResource(equirectangular: Self.makeEnvironment(for: lighting))
+        renderer.lighting.intensityExponent = lighting.environmentExposure
         renderer.cameraSettings.colorBackground = .color(CGColor(gray: 0, alpha: 1))
         renderer.cameraSettings.antialiasing = .multisample4X
 
@@ -115,13 +141,17 @@ final class CompositionRenderer {
     /// edges would show inside the frame, it's enlarged around the point the camera looks
     /// at, keeping that part of the image in place. If the camera doesn't face the backdrop
     /// at all, a frame-filling plane is built behind the scene instead.
-    private func makeBackdrop(live: ModelEntity, image: CGImage, camera: CaptureCamera,
-                              sceneCenter: SIMD3<Float>, sceneRadius: Float) async throws -> Entity {
+    private func makeBackdrop(live: ModelEntity, image: CGImage, pose: Transform?, camera: CaptureCamera,
+                              sceneCenter: SIMD3<Float>, sceneRadius: Float, tint: SIMD3<Float>) async throws -> Entity {
         if live.isEnabled, let mesh = live.model?.mesh {
             let copy = live.clone(recursive: false)
             // The copy must hold still: the live system would otherwise re-aim it in the render scene.
             copy.components.remove(ViewerFacingBackdropComponent.self)
-            copy.transform = Transform(matrix: live.transformMatrix(relativeTo: nil))
+            copy.transform = pose ?? Transform(matrix: live.transformMatrix(relativeTo: nil))
+            if var material = copy.model?.materials.first as? UnlitMaterial {
+                material.color.tint = Self.color(tint)
+                copy.model?.materials = [material]
+            }
             let halfSize = SIMD2(mesh.bounds.extents.x, mesh.bounds.extents.y) / 2
 
             if let scale = Self.coverageScale(planeTransform: copy.transformMatrix(relativeTo: nil),
@@ -144,7 +174,7 @@ final class CompositionRenderer {
         // Fallback: a plane perpendicular to the camera, behind the scene, filling the frame.
         let texture = try await TextureResource(image: image, withName: nil, options: .init(semantic: .color))
         var material = UnlitMaterial(applyPostProcessToneMap: false)
-        material.color = .init(texture: .init(texture))
+        material.color = .init(tint: Self.color(tint), texture: .init(texture))
 
         let forward = camera.orientation.act([0, 0, -1])
         let depth = max(simd_dot(sceneCenter - camera.position, forward), 0.2) + sceneRadius + BackdropLayout.gapBehindTarget
@@ -204,44 +234,46 @@ final class CompositionRenderer {
 
     // MARK: Lighting
 
-    /// Classic three-point lighting placed relative to the camera: a shadow-casting key
-    /// light above and to the left, a soft fill from the right, and a rim light from
-    /// behind that separates the scene from the backdrop.
-    private static func studioLights(camera: CaptureCamera, center: SIMD3<Float>) -> [Entity] {
+    /// Three-point lighting placed relative to the camera, so it looks the same from
+    /// any angle: a key light, a fill light, and a rim light from behind that separates
+    /// the scene from the backdrop. The preset sets each light's color, strength, and
+    /// direction.
+    private static func lights(for preset: LightingPreset, camera: CaptureCamera, center: SIMD3<Float>) -> [Entity] {
         let right = camera.orientation.act([1, 0, 0])
         var back = center - camera.position
         back.y = 0
         back = simd_length(back) > 1e-3 ? simd_normalize(back) : [0, 0, -1]
-        let up = SIMD3<Float>(0, 1, 0)
 
-        func light(intensity: Float, from offset: SIMD3<Float>, shadows: Bool) -> DirectionalLight {
+        func light(_ spec: LightingPreset.Light, shadows: Bool) -> DirectionalLight {
             let light = DirectionalLight()
-            light.light.intensity = intensity
+            light.light.intensity = spec.intensity
+            light.light.color = color(spec.color)
             if shadows { light.shadow = DirectionalLightComponent.Shadow() }
-            // A directional light shines down its -Z axis.
-            light.orientation = .upright(facing: offset)
+            // A directional light shines down its -Z axis, so +Z points back at where it comes from.
+            light.orientation = .upright(facing: -back * spec.front + right * spec.side + [0, spec.up, 0])
             return light
         }
 
         return [
-            light(intensity: 2600, from: -back * 0.8 - right * 0.9 + up * 1.6, shadows: true),
-            light(intensity: 800, from: -back * 1.0 + right * 1.0 + up * 0.4, shadows: false),
-            light(intensity: 1400, from: back * 1.0 + up * 1.2, shadows: false)
+            light(preset.key, shadows: preset.keyCastsShadows),
+            light(preset.fill, shadows: false),
+            light(preset.rim, shadows: false)
         ]
     }
 
-    /// A soft studio gradient used as image-based lighting for the scene.
-    private static func makeStudioEnvironment() -> CGImage {
+    private static func color(_ rgb: SIMD3<Float>) -> PlatformColor {
+        PlatformColor(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1)
+    }
+
+    /// The preset's sky-to-ground gradient, used as image-based lighting.
+    private static func makeEnvironment(for preset: LightingPreset) -> CGImage {
         let width = 512
         let height = 256
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
         let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                                 space: colorSpace, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-        let colors = [
-            CGColor(srgbRed: 0.96, green: 0.97, blue: 1.00, alpha: 1),
-            CGColor(srgbRed: 0.80, green: 0.82, blue: 0.85, alpha: 1),
-            CGColor(srgbRed: 0.42, green: 0.42, blue: 0.43, alpha: 1)
-        ] as CFArray
+        let stops = [preset.environment.top, preset.environment.middle, preset.environment.bottom]
+        let colors = stops.map { CGColor(srgbRed: CGFloat($0.x), green: CGFloat($0.y), blue: CGFloat($0.z), alpha: 1) } as CFArray
         let gradient = CGGradient(colorsSpace: colorSpace, colors: colors, locations: [0, 0.5, 1])!
         context.drawLinearGradient(gradient, start: CGPoint(x: 0, y: height), end: .zero, options: [])
         return context.makeImage()!

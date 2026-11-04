@@ -33,6 +33,7 @@ enum ProjectStore {
         var version = 1
         var state: ProjectState
         var captureLens: CaptureLens
+        var captureLighting: LightingPreset?
         var backdrop: Backdrop?
     }
 
@@ -42,8 +43,13 @@ enum ProjectStore {
         var backdropImage: CGImage?
     }
 
+    /// Where projects live. Tests point this at a temporary folder so they never touch
+    /// real projects; the app leaves it nil (Application Support).
+    static var storageOverride: URL?
+
+    private static var storage: URL { storageOverride ?? URL.applicationSupportDirectory }
     private static var root: URL {
-        URL.applicationSupportDirectory.appending(path: "Projects", directoryHint: .isDirectory)
+        storage.appending(path: "Projects", directoryHint: .isDirectory)
     }
     private static func folder(_ project: UUID) -> URL {
         root.appending(path: project.uuidString, directoryHint: .isDirectory)
@@ -115,7 +121,7 @@ enum ProjectStore {
     /// project list so nothing is lost.
     private static func migrateSingleProjectIfNeeded() {
         let files = FileManager.default
-        let legacy = URL.applicationSupportDirectory.appending(path: "StoryboardProject", directoryHint: .isDirectory)
+        let legacy = storage.appending(path: "StoryboardProject", directoryHint: .isDirectory)
         guard files.fileExists(atPath: legacy.appending(path: "project.json").path(percentEncoded: false)) else { return }
 
         let id = UUID()
@@ -186,7 +192,9 @@ enum ProjectStore {
                 ?? UIImage(data: jpeg)
             guard let thumbnail else { return nil }
             return CapturedPhoto(id: entry.id, takenAt: entry.takenAt, lens: entry.lens,
-                                 jpegData: jpeg, thumbnail: thumbnail, assignment: entry.assignment)
+                                 jpegData: jpeg, thumbnail: thumbnail, assignment: entry.assignment,
+                                 camera: entry.camera, lighting: entry.lighting ?? .studio,
+                                 backdropPose: entry.backdropPose)
         }
 
         let backdropImage = saved.backdrop?.fileID

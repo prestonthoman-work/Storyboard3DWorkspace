@@ -30,12 +30,35 @@ enum CaptureLens: Int, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// Where the capture camera is and which way it looks.
-struct CaptureCamera {
+/// Where the capture camera is and which way it looks. Saved with each photo so it
+/// can be retaken or re-rendered from the same angle.
+struct CaptureCamera: Codable, Equatable {
     var position: SIMD3<Float>
     /// Camera looks down local -Z with +Y up.
     var orientation: simd_quatf
     var lens: CaptureLens
+
+    init(position: SIMD3<Float>, orientation: simd_quatf, lens: CaptureLens) {
+        self.position = position
+        self.orientation = orientation
+        self.lens = lens
+    }
+
+    private enum CodingKeys: String, CodingKey { case position, rotation, lens }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        position = try container.decode(SIMD3<Float>.self, forKey: .position)
+        orientation = simd_quatf(vector: try container.decode(SIMD4<Float>.self, forKey: .rotation))
+        lens = try container.decode(CaptureLens.self, forKey: .lens)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(position, forKey: .position)
+        try container.encode(orientation.vector, forKey: .rotation)
+        try container.encode(lens, forKey: .lens)
+    }
 
     /// A camera at the viewer's head, facing where they face, with the roll removed so
     /// the horizon stays level, like a camera on a tripod.

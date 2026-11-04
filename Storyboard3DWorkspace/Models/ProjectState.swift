@@ -42,6 +42,10 @@ struct ProjectState: Codable, Equatable {
         var takenAt: Date
         var lens: CaptureLens
         var assignment: CapturedPhoto.Assignment
+        // Optional so projects saved before these existed still load.
+        var camera: CaptureCamera?
+        var lighting: LightingPreset?
+        var backdropPose: CodableTransform?
     }
 
     var base: Base

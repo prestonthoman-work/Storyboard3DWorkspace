@@ -118,6 +118,7 @@ class AppModel {
             isRestoring = true
             photos.load(loaded.photos, primaries: loaded.saved.state.primaryPhotoIDs)
             captureLens = loaded.saved.captureLens
+            captureLighting = loaded.saved.captureLighting ?? .studio
             isRestoring = false
             restore(loaded.saved.state)
             if let backdrop = loaded.saved.backdrop, backdrop.source != .builtInSky, let image = loaded.backdropImage {
@@ -146,6 +147,7 @@ class AppModel {
         backdropFileID = nil
         isRestoring = true
         captureLens = .standard
+        captureLighting = .studio
         isRestoring = false
     }
 
@@ -366,6 +368,7 @@ class AppModel {
             selectObject(id)
             objectNote = model.note
             objectPrompt = ""
+            documentChanged()
             sceneEdited()
         } catch {
             objectError = error.localizedDescription
@@ -380,6 +383,7 @@ class AppModel {
         workspace.duplicate(object, id: id)
         objects.append(ObjectSummary(id: id, name: summary.name, source: summary.source, recipe: summary.recipe))
         selectObject(id)
+        documentChanged()
         sceneEdited()
     }
 
@@ -391,8 +395,7 @@ class AppModel {
         objects.removeAll { $0.id == id }
         selectObject(nil)
         // The object leaves every keyframe it was in, so those keyframes have changed.
-        let changed = animator.removeObject(id)
-        changed.forEach(detachPhotos(from:))
+        keyframesChanged(animator.removeObject(id))
         documentChanged()
     }
 
@@ -559,6 +562,7 @@ class AppModel {
     enum CaptureStatus: Equatable {
         case attached(keyframeNumber: Int)
         case libraryOnly
+        case retaken(keyframeNumber: Int)
         case saved
         case failed(String)
     }
@@ -573,6 +577,17 @@ class AppModel {
     /// Seconds left on the self-timer, or nil when no countdown is running.
     private(set) var captureCountdown: Int?
     @ObservationIgnored private var countdownTask: Task<Void, Never>?
+
+    var captureLighting: LightingPreset = .studio {
+        didSet { documentChanged() }
+    }
+
+    /// When a keyframe changes, re-render its photos from their saved angles instead of
+    /// moving them to the library.
+    var keepPhotosInSync: Bool = UserDefaults.standard.object(forKey: "keepPhotosInSync") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(keepPhotosInSync, forKey: "keepPhotosInSync") }
+    }
+    private(set) var isUpdatingPhotos = false
 
     var captureLens: CaptureLens = .standard {
         didSet {
@@ -657,14 +672,19 @@ class AppModel {
                               at: workspace.baseAnchor.position(relativeTo: nil), lens: captureLens)
         }
 
+        // Remember where the backdrop was, so this exact shot can be rendered again later.
+        let backdropPose = CodableTransform(Transform(matrix: workspace.backdrop.transformMatrix(relativeTo: nil)))
         do {
             let image = try await CompositionRenderer().render(
-                scene: workspace.baseAnchor,
+                snapshot: CompositionRenderer.snapshot(of: workspace.baseAnchor),
                 backdrop: workspace.backdrop,
+                backdropPose: nil,
                 background: background.image,
-                camera: camera
+                camera: camera,
+                lighting: captureLighting
             )
-            guard let photo = photos.add(image, lens: captureLens, keyframe: target?.keyframe.id) else {
+            guard let photo = photos.add(image, lens: captureLens, keyframe: target?.keyframe.id, camera: camera,
+                                         lighting: captureLighting, backdropPose: backdropPose) else {
                 captureStatus = .failed("The capture couldn't be saved.")
                 return
             }
@@ -757,7 +777,90 @@ class AppModel {
     /// longer show it, so they're detached (they stay in the library).
     private func autoSaveSelectedKeyframe() {
         if let changed = animator.saveSceneToSelectedKeyframe() {
-            detachPhotos(from: changed)
+            keyframesChanged([changed])
+        }
+    }
+
+    /// Keyframes whose content changed. Their photos no longer show them, so they're
+    /// re-rendered from their saved angles, or, if that's off or impossible (photos taken
+    /// before angles were saved), moved to the library.
+    private func keyframesChanged(_ keyframeIDs: [Keyframe.ID]) {
+        var jobs: [(photo: CapturedPhoto, snapshot: Entity)] = []
+        for id in keyframeIDs {
+            let affected = photos.photos(for: id)
+            guard !affected.isEmpty else { continue }
+            guard keepPhotosInSync, background != nil, let keyframe = animator.timeline.keyframe(id) else {
+                detachPhotos(from: id)
+                continue
+            }
+            // One snapshot per keyframe, taken now, before anything else can change.
+            let snapshot = workspace.snapshot(at: keyframe.poses, keyframedObjects: animator.timeline.keyframedObjectIDs)
+            for photo in affected {
+                if photo.camera != nil {
+                    jobs.append((photo, snapshot))
+                } else {
+                    photos.detach(photo)
+                }
+            }
+        }
+        guard !jobs.isEmpty else { return }
+        Task { await rerender(jobs) }
+    }
+
+    private func rerender(_ jobs: [(photo: CapturedPhoto, snapshot: Entity)]) async {
+        guard let background else { return }
+        isUpdatingPhotos = true
+        defer { isUpdatingPhotos = false }
+
+        var updated = 0
+        for (photo, snapshot) in jobs {
+            // Skip photos deleted or detached since the change.
+            guard let camera = photo.camera, photos.photo(photo.id)?.keyframeID == photo.keyframeID else { continue }
+            guard let image = try? await CompositionRenderer().render(
+                snapshot: snapshot, backdrop: workspace.backdrop, backdropPose: photo.backdropPose?.transform,
+                background: background.image, camera: camera, lighting: photo.lighting),
+                  let replacement = photos.replace(photo, with: image)
+            else { continue }
+            updated += 1
+            if focusedKeyframePhotoID == photo.id { focusedKeyframePhotoID = replacement.id }
+            if selectedLibraryPhotoID == photo.id { selectedLibraryPhotoID = replacement.id }
+        }
+        if updated > 0 {
+            keyframeNotice = updated == 1 ? "Updated 1 photo to match the change." : "Updated \(updated) photos to match the change."
+            exportedFile = nil
+            documentChanged()
+        }
+    }
+
+    var canRetakeFocusedPhoto: Bool {
+        focusedKeyframePhoto?.camera != nil && background != nil && !isCapturing && captureCountdown == nil
+    }
+
+    /// Re-shoots the selected keyframe's shown photo from exactly the same spot, using the
+    /// current lens and lighting. Replaces it in place (undo brings the old one back).
+    func retakeFocusedPhoto() async {
+        guard canRetakeFocusedPhoto, let background, let photo = focusedKeyframePhoto,
+              var camera = photo.camera, let keyframeID = photo.keyframeID else { return }
+        checkpoint()
+        guard let keyframe = animator.timeline.keyframe(keyframeID),
+              let number = animator.number(of: keyframeID) else { return }
+        isCapturing = true
+        defer { isCapturing = false }
+
+        camera.lens = captureLens
+        let snapshot = workspace.snapshot(at: keyframe.poses, keyframedObjects: animator.timeline.keyframedObjectIDs)
+        do {
+            let image = try await CompositionRenderer().render(
+                snapshot: snapshot, backdrop: workspace.backdrop, backdropPose: photo.backdropPose?.transform,
+                background: background.image, camera: camera, lighting: captureLighting)
+            guard let replacement = photos.replace(photo, with: image, camera: camera, lighting: captureLighting) else { return }
+            focusedKeyframePhotoID = replacement.id
+            selectedLibraryPhotoID = replacement.id
+            captureStatus = .retaken(keyframeNumber: number)
+            exportedFile = nil
+            documentChanged()
+        } catch {
+            captureStatus = .failed(error.localizedDescription)
         }
     }
 
@@ -810,6 +913,8 @@ class AppModel {
         autoSaveTask?.cancel()
         autoSaveTask = nil
         autoSaveSelectedKeyframe()
+        // The cancelled task would have marked the project changed; do it here instead.
+        documentChanged()
     }
 
     // MARK: Slideshow export
@@ -968,7 +1073,10 @@ class AppModel {
             objects: objectStates,
             keyframes: animator.timeline.keyframes.map(ProjectState.KeyframeState.init),
             selectedKeyframeID: animator.selectedKeyframeID,
-            photos: photos.photos.map { .init(id: $0.id, takenAt: $0.takenAt, lens: $0.lens, assignment: $0.assignment) },
+            photos: photos.photos.map {
+                .init(id: $0.id, takenAt: $0.takenAt, lens: $0.lens, assignment: $0.assignment,
+                      camera: $0.camera, lighting: $0.lighting, backdropPose: $0.backdropPose)
+            },
             primaryPhotoIDs: photos.primaryPhotoIDs
         )
     }
@@ -1065,7 +1173,8 @@ class AppModel {
         let backdrop = background.map {
             ProjectStore.SavedProject.Backdrop(name: $0.name, source: $0.source, fileID: backdropFileID)
         }
-        let project = ProjectStore.SavedProject(state: currentState(), captureLens: captureLens, backdrop: backdrop)
+        let project = ProjectStore.SavedProject(state: currentState(), captureLens: captureLens,
+                                                captureLighting: captureLighting, backdrop: backdrop)
         do {
             try ProjectStore.save(info, project: project, photos: photos.photos,
                                   backdropImage: backdropFileID == nil ? nil : background?.image)

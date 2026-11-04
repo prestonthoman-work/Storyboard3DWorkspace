@@ -250,6 +250,19 @@ final class WorkspaceScene {
         }
     }
 
+    /// A render-ready copy of the scene posed at a keyframe. The live objects are posed,
+    /// copied, and put back within the same moment, so nothing visibly moves.
+    func snapshot(at poses: [ObjectID: Transform], keyframedObjects: Set<ObjectID>) -> Entity {
+        let saved = objects.map { ($0, $0.transform, $0.isEnabled) }
+        apply(poses, keyframedObjects: keyframedObjects)
+        let snapshot = CompositionRenderer.snapshot(of: baseAnchor)
+        for (object, transform, isEnabled) in saved {
+            object.transform = transform
+            object.isEnabled = isEnabled
+        }
+        return snapshot
+    }
+
     /// True when nothing is being held or is still falling, so poses are final.
     var isSettled: Bool {
         objects.filter(\.isEnabled).allSatisfy { object in

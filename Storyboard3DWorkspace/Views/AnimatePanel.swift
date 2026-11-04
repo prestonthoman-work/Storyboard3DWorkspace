@@ -101,6 +101,16 @@ private struct SelectedKeyframeShot: View {
                     Text("Keyframe \(number)")
                         .font(.headline)
                     Spacer()
+                    if focused?.camera != nil {
+                        Button {
+                            Task { await appModel.retakeFocusedPhoto() }
+                        } label: {
+                            Label("Retake", systemImage: "arrow.triangle.2.circlepath.camera")
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(!appModel.canRetakeFocusedPhoto)
+                        .help("Shoot this photo again from the same spot with the current lens and lighting")
+                    }
                     if let focused {
                         if appModel.photos.isPrimary(focused) {
                             Label("Primary", systemImage: "star.fill")
@@ -155,7 +165,11 @@ private struct SelectedKeyframeShot: View {
                 }
                 CaptureStatusLine()
 
-                if let notice = appModel.keyframeNotice {
+                if appModel.isUpdatingPhotos {
+                    Label("Updating photos…", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else if let notice = appModel.keyframeNotice {
                     Label(notice, systemImage: "photo.on.rectangle")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -163,6 +177,11 @@ private struct SelectedKeyframeShot: View {
                 Label("Changes to the scene save to keyframe \(number) automatically.", systemImage: "checkmark.circle")
                     .font(.footnote)
                     .foregroundStyle(.tertiary)
+
+                @Bindable var appModel = appModel
+                Toggle("Update photos when a keyframe changes", isOn: $appModel.keepPhotosInSync)
+                    .font(.footnote)
+                    .help("Re-render a keyframe's photos from their saved angles when you change it. Off: they move to the library.")
             }
         } else {
             Text("No keyframe is selected, so changes aren't being saved to one. Select a keyframe below, or add a new one.")

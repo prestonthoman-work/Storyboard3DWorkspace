@@ -5,7 +5,7 @@
 
 import SwiftUI
 
-/// Lens choice and the shutter button, shared by the Animate and Capture tabs.
+/// Lighting, lens, and the shutter button, shared by the Animate and Capture tabs.
 /// While the self-timer runs, the shutter becomes a Cancel button showing the count.
 struct CaptureControls: View {
     @Environment(AppModel.self) private var appModel
@@ -16,14 +16,25 @@ struct CaptureControls: View {
         @Bindable var appModel = appModel
 
         HStack(spacing: 12) {
+            Picker("Lighting", selection: $appModel.captureLighting) {
+                ForEach(LightingPreset.allCases) { preset in
+                    Label(preset.name, systemImage: preset.symbol).tag(preset)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(appModel.captureCountdown != nil)
+            .help("Lighting for the captured photo")
+
             Picker("Lens", selection: $appModel.captureLens) {
                 ForEach(CaptureLens.allCases) { lens in
                     Text(lens.label).tag(lens)
                 }
             }
-            .pickerStyle(.segmented)
+            .pickerStyle(.menu)
             .disabled(appModel.captureCountdown != nil)
             .help("Lens focal length, like a Blender camera")
+
+            Spacer(minLength: 0)
 
             if let remaining = appModel.captureCountdown {
                 Button("Cancel (\(remaining))", systemImage: "xmark") {
@@ -49,6 +60,10 @@ struct CaptureStatusLine: View {
         switch appModel.captureStatus {
         case .attached(let number):
             Label("Added to keyframe \(number).", systemImage: "checkmark.circle.fill")
+                .font(.callout)
+                .foregroundStyle(.green)
+        case .retaken(let number):
+            Label("Retook the photo for keyframe \(number) from the same angle.", systemImage: "checkmark.circle.fill")
                 .font(.callout)
                 .foregroundStyle(.green)
         case .libraryOnly:
