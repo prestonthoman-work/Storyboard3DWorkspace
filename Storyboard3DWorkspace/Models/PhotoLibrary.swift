@@ -8,7 +8,7 @@ import UIKit
 
 /// A rendered capture, optionally attached to the keyframe it was taken at.
 struct CapturedPhoto: Identifiable {
-    enum Assignment: Equatable {
+    enum Assignment: Codable, Equatable {
         /// Taken while the scene matched this keyframe.
         case keyframe(Keyframe.ID)
         /// Taken while the scene didn't match any keyframe.
@@ -17,8 +17,8 @@ struct CapturedPhoto: Identifiable {
         case removed
     }
 
-    let id = UUID()
-    let takenAt = Date()
+    var id = UUID()
+    var takenAt = Date()
     let lens: CaptureLens
     /// Full-resolution image, JPEG-compressed to keep memory low.
     let jpegData: Data
@@ -40,6 +40,8 @@ final class PhotoLibrary {
     private(set) var photos: [CapturedPhoto] = []
     private(set) var primaryPhotoIDs: [Keyframe.ID: CapturedPhoto.ID] = [:]
 
+    /// Every photo seen this session, including deleted ones, so undo can bring them back.
+    @ObservationIgnored private(set) var archive: [CapturedPhoto.ID: CapturedPhoto] = [:]
     @ObservationIgnored private var decodedImages: [CapturedPhoto.ID: UIImage] = [:]
     @ObservationIgnored private var decodeOrder: [CapturedPhoto.ID] = []
 
@@ -55,12 +57,33 @@ final class PhotoLibrary {
             assignment: keyframe.map { .keyframe($0) } ?? .unassigned
         )
         photos.append(photo)
+        archive[photo.id] = photo
         // A keyframe's first photo becomes its primary until another is chosen.
         if let keyframe, primaryPhotoIDs[keyframe] == nil {
             primaryPhotoIDs[keyframe] = photo.id
         }
         remember(full, for: photo.id)
         return photo
+    }
+
+    /// Adds photos read from disk.
+    func load(_ loaded: [CapturedPhoto], primaries: [Keyframe.ID: CapturedPhoto.ID]) {
+        for photo in loaded { archive[photo.id] = photo }
+        photos = loaded
+        primaryPhotoIDs = primaries
+    }
+
+    /// Restores which photos exist and how they're attached (undo). Photos are looked up
+    /// in the archive, so deleted ones come back with their images.
+    func restore(_ entries: [(id: CapturedPhoto.ID, assignment: CapturedPhoto.Assignment)],
+                 primaries: [Keyframe.ID: CapturedPhoto.ID]) {
+        photos = entries.compactMap { entry in
+            guard var photo = archive[entry.id] else { return nil }
+            photo.assignment = entry.assignment
+            return photo
+        }
+        let existing = Set(photos.map(\.id))
+        primaryPhotoIDs = primaries.filter { existing.contains($0.value) }
     }
 
     func photo(_ id: CapturedPhoto.ID?) -> CapturedPhoto? {

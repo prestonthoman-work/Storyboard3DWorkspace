@@ -7,7 +7,7 @@ import UIKit
 
 /// The 2D image currently shown on the viewer-facing backdrop.
 struct BackdropImage {
-    enum Source {
+    enum Source: String, Codable {
         case builtInSky
         case photos
         case files

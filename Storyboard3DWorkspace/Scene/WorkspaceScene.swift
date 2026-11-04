@@ -144,9 +144,10 @@ final class WorkspaceScene {
 
     /// Adds a generated object to the base and returns the entity the user manipulates.
     @discardableResult
-    func addObject(_ content: Entity, name: String) -> Entity {
+    func addObject(_ content: Entity, name: String, id: ObjectID = ObjectID()) -> Entity {
         let object = Entity()
         object.name = name
+        object.components.set(PlacedObjectComponent(id: id))
         object.addChild(content)
         object.position = openSpot()
         objectsContainer.addChild(object)
@@ -156,7 +157,7 @@ final class WorkspaceScene {
     }
 
     @discardableResult
-    func duplicate(_ object: Entity) -> Entity {
+    func duplicate(_ object: Entity, id: ObjectID = ObjectID()) -> Entity {
         // Keep the selection ring out of the copy.
         let ringParent = selectionIndicator.parent
         selectionIndicator.removeFromParent()
@@ -167,6 +168,7 @@ final class WorkspaceScene {
         // Offset sideways relative to the base, so the copy is visible next to the original.
         copy.position += SIMD3<Float>(0.05, 0, 0.03)
         copy.isEnabled = true
+        copy.components.set(PlacedObjectComponent(id: id))
         objectsContainer.addChild(copy)
         configureInteraction(for: copy)
         objects.append(copy)
@@ -181,8 +183,12 @@ final class WorkspaceScene {
         objects.removeAll { $0 == object }
     }
 
-    func object(withID id: Entity.ID) -> Entity? {
-        objects.first { $0.id == id }
+    func object(withID id: ObjectID) -> Entity? {
+        objects.first { objectID(of: $0) == id }
+    }
+
+    func objectID(of object: Entity) -> ObjectID? {
+        object.components[PlacedObjectComponent.self]?.id
     }
 
     /// The placed object that `entity` belongs to, if any.
@@ -214,18 +220,21 @@ final class WorkspaceScene {
     }
 
     /// Current poses of every visible placed object, relative to the base.
-    func currentPoses() -> [Entity.ID: Transform] {
-        Dictionary(uniqueKeysWithValues: objects.filter(\.isEnabled).map { ($0.id, $0.transform) })
+    func currentPoses() -> [ObjectID: Transform] {
+        Dictionary(uniqueKeysWithValues: objects.filter(\.isEnabled).compactMap { object in
+            objectID(of: object).map { ($0, object.transform) }
+        })
     }
 
     /// Poses objects for a moment in the animation. Keyframed objects without a pose are
     /// hidden; objects that aren't in any keyframe are left alone.
-    func apply(_ poses: [Entity.ID: Transform], keyframedObjects: Set<Entity.ID>) {
+    func apply(_ poses: [ObjectID: Transform], keyframedObjects: Set<ObjectID>) {
         for object in objects {
-            if let pose = poses[object.id] {
+            guard let id = objectID(of: object) else { continue }
+            if let pose = poses[id] {
                 object.transform = pose
                 object.isEnabled = true
-            } else if keyframedObjects.contains(object.id) {
+            } else if keyframedObjects.contains(id) {
                 object.isEnabled = false
             }
         }

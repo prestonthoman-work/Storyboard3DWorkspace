@@ -31,6 +31,15 @@ final class KeyframeAnimator {
         timeline.keyframes.firstIndex { $0.id == id }.map { $0 + 1 }
     }
 
+    /// Replaces the whole timeline (undo, or loading a saved project) without moving any
+    /// objects: their poses are restored separately.
+    func restore(_ keyframes: [Keyframe], selecting selectedID: Keyframe.ID?) {
+        pause()
+        timeline = KeyframeTimeline(keyframes: keyframes)
+        selectedKeyframeID = timeline.keyframe(selectedID)?.id
+        playhead = selectedKeyframe?.time ?? 0
+    }
+
     // MARK: Editing
 
     func addKeyframe() {
@@ -53,7 +62,7 @@ final class KeyframeAnimator {
 
     /// A deleted object leaves every keyframe.
     /// - Returns: The keyframes that contained it.
-    func removeObject(_ objectID: Entity.ID) -> [Keyframe.ID] {
+    func removeObject(_ objectID: ObjectID) -> [Keyframe.ID] {
         timeline.removeObject(objectID)
     }
 

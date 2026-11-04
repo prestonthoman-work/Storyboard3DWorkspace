@@ -19,6 +19,7 @@ struct SampleModelGenerationService: ModelGenerationService {
             return GeneratedModel(
                 displayName: "\(colorPrefix)Placeholder",
                 source: .sample,
+                recipe: .placeholder(color: match.colorName),
                 entity: SampleObjectCatalog.makePlaceholder(tint: match.color),
                 note: "No sample object matches that prompt, so a placeholder block was placed."
             )
@@ -27,6 +28,7 @@ struct SampleModelGenerationService: ModelGenerationService {
         return GeneratedModel(
             displayName: colorPrefix + kind.name,
             source: .sample,
+            recipe: .sampleObject(kind: kind.rawValue, color: match.colorName),
             entity: SampleObjectCatalog.make(kind, tint: match.color),
             note: "Sample: matched “\(keyword)” to the built-in \(kind.name.lowercased())."
         )
@@ -50,6 +52,7 @@ struct SampleModelGenerationService: ModelGenerationService {
         return GeneratedModel(
             displayName: template.name,
             source: .sample,
+            recipe: .baseTemplate(template.rawValue),
             entity: BaseTemplateBuilder.make(template),
             note: note
         )

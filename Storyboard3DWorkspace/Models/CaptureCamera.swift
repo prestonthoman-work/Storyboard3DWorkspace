@@ -7,7 +7,7 @@ import Foundation
 import simd
 
 /// Lens choices for captures, named by full-frame focal length like a Blender camera.
-enum CaptureLens: Int, CaseIterable, Identifiable {
+enum CaptureLens: Int, Codable, CaseIterable, Identifiable {
     case wide = 24
     case standard = 35
     case normal = 50

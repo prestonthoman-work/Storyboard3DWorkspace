@@ -45,7 +45,8 @@ private struct PanelPage<Content: View>: View {
                 .padding(.bottom, 24)
                 .navigationTitle(title)
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        UndoRedoButtons()
                         ToggleImmersiveSpaceButton()
                     }
                 }
@@ -57,4 +58,18 @@ private struct PanelPage<Content: View>: View {
     WorkspacePanel()
         .environment(AppModel())
         .frame(width: 500, height: 680)
+}
+
+/// Undo and Redo for edits to the base, objects, keyframes, and photos.
+private struct UndoRedoButtons: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        Button("Undo", systemImage: "arrow.uturn.backward") { appModel.undo() }
+            .disabled(!appModel.canUndo)
+            .help("Undo")
+        Button("Redo", systemImage: "arrow.uturn.forward") { appModel.redo() }
+            .disabled(!appModel.canRedo)
+            .help("Redo")
+    }
 }

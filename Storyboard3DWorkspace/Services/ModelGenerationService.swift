@@ -6,7 +6,7 @@
 import RealityKit
 
 /// Where a model came from, so the UI can be honest about sample output.
-enum ModelSource: Equatable {
+enum ModelSource: Codable, Equatable {
     case sample
     case service(name: String)
 
@@ -18,9 +18,20 @@ enum ModelSource: Equatable {
     }
 }
 
+/// Enough information to rebuild generated content later (undo, or reopening the app).
+///
+/// Sample mode can rebuild everything from these few values. A real generation service
+/// would add a case that points at the model file it saved, such as a USDZ on disk.
+enum ModelRecipe: Codable, Equatable {
+    case sampleObject(kind: String, color: String?)
+    case placeholder(color: String?)
+    case baseTemplate(String)
+}
+
 struct GeneratedModel {
     let displayName: String
     let source: ModelSource
+    let recipe: ModelRecipe
     /// Built so it's centered on the origin and rests on y = 0.
     let entity: Entity
     /// Optional explanation of what was produced, shown under the prompt field.

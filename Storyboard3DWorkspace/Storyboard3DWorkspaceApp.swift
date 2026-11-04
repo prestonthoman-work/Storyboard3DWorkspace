@@ -12,6 +12,7 @@ import RealityKit
 struct Storyboard3DWorkspaceApp: App {
 
     @State private var appModel = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         ViewerFacingBackdropComponent.registerComponent()
@@ -19,12 +20,16 @@ struct Storyboard3DWorkspaceApp: App {
         ObjectGravityComponent.registerComponent()
         GravitySurfaceComponent.registerComponent()
         ObjectGravitySystem.registerSystem()
+        PlacedObjectComponent.registerComponent()
     }
 
     var body: some SwiftUI.Scene {
         WindowGroup {
             ContentView()
                 .environment(appModel)
+                .onChange(of: scenePhase) { _, phase in
+                    if phase != .active { appModel.saveNow() }
+                }
         }
         .windowResizability(.contentSize)
         // A utility panel sits low and close to the viewer, keeping the model's sight line clear.

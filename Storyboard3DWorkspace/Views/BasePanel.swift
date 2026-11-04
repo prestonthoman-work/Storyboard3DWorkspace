@@ -90,6 +90,8 @@ private struct BaseSizeControl: View {
                 Text("\(Int(BaseSizeLimits.range.lowerBound))")
             } maximumValueLabel: {
                 Text("\(Int(BaseSizeLimits.range.upperBound))")
+            } onEditingChanged: { isEditing in
+                if isEditing { appModel.beginBaseResize() }
             }
             .font(.caption)
             .foregroundStyle(.secondary)

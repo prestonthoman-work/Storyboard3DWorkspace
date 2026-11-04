@@ -9,10 +9,10 @@ import simd
 
 /// A snapshot of every placed object's pose at one moment.
 struct Keyframe: Identifiable {
-    let id = UUID()
+    var id = UUID()
     var time: TimeInterval
     /// Each object's position, rotation, and scale relative to the base.
-    var poses: [Entity.ID: Transform]
+    var poses: [ObjectID: Transform]
 }
 
 /// An ordered list of evenly spaced keyframes, with eased interpolation between them.
@@ -25,17 +25,21 @@ struct KeyframeTimeline {
 
     private(set) var keyframes: [Keyframe] = []
 
+    init(keyframes: [Keyframe] = []) {
+        self.keyframes = keyframes
+    }
+
     var duration: TimeInterval { keyframes.last?.time ?? 0 }
     var canPlay: Bool { keyframes.count >= 2 }
 
     @discardableResult
-    mutating func append(_ poses: [Entity.ID: Transform]) -> Keyframe {
+    mutating func append(_ poses: [ObjectID: Transform]) -> Keyframe {
         let keyframe = Keyframe(time: keyframes.isEmpty ? 0 : duration + Self.spacing, poses: poses)
         keyframes.append(keyframe)
         return keyframe
     }
 
-    mutating func update(_ id: Keyframe.ID, with poses: [Entity.ID: Transform]) {
+    mutating func update(_ id: Keyframe.ID, with poses: [ObjectID: Transform]) {
         guard let index = keyframes.firstIndex(where: { $0.id == id }) else { return }
         keyframes[index].poses = poses
     }
@@ -58,7 +62,7 @@ struct KeyframeTimeline {
 
     /// True when both snapshots hold the same objects in the same poses, within small
     /// tolerances (a couple of millimeters, about a degree).
-    static func posesMatch(_ a: [Entity.ID: Transform], _ b: [Entity.ID: Transform]) -> Bool {
+    static func posesMatch(_ a: [ObjectID: Transform], _ b: [ObjectID: Transform]) -> Bool {
         guard Set(a.keys) == Set(b.keys) else { return false }
         for (id, poseA) in a {
             guard let poseB = b[id] else { return false }
@@ -70,17 +74,17 @@ struct KeyframeTimeline {
     }
 
     /// Every object that appears in at least one keyframe.
-    var keyframedObjectIDs: Set<Entity.ID> {
+    var keyframedObjectIDs: Set<ObjectID> {
         Set(keyframes.flatMap { $0.poses.keys })
     }
 
     /// The interpolated pose at `time` of every object visible then. Keyframed objects
     /// missing from the result are hidden at that time.
-    func poses(at time: TimeInterval) -> [Entity.ID: Transform] {
+    func poses(at time: TimeInterval) -> [ObjectID: Transform] {
         // The keyframe in effect: the last one at or before `time`, else the first.
         guard let governing = keyframes.last(where: { $0.time <= time + 1e-6 }) ?? keyframes.first else { return [:] }
 
-        var result: [Entity.ID: Transform] = [:]
+        var result: [ObjectID: Transform] = [:]
         for objectID in governing.poses.keys {
             let track = keyframes.compactMap { keyframe in keyframe.poses[objectID].map { (keyframe.time, $0) } }
             if let pose = Self.interpolate(track, at: time) { result[objectID] = pose }
@@ -90,7 +94,7 @@ struct KeyframeTimeline {
 
     /// Removes a deleted object from every keyframe.
     /// - Returns: The keyframes that contained it.
-    mutating func removeObject(_ objectID: Entity.ID) -> [Keyframe.ID] {
+    mutating func removeObject(_ objectID: ObjectID) -> [Keyframe.ID] {
         var changed: [Keyframe.ID] = []
         for index in keyframes.indices where keyframes[index].poses[objectID] != nil {
             keyframes[index].poses[objectID] = nil

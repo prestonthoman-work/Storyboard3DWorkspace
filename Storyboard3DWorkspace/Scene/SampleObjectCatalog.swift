@@ -10,7 +10,7 @@ import UIKit
 ///
 /// Every object is built to diorama scale, centered on the origin, resting on y = 0.
 enum SampleObjectCatalog {
-    enum Kind: CaseIterable {
+    enum Kind: String, CaseIterable {
         case house, tree, shrub, building, car, lamp, fence, rock
 
         var name: String {
@@ -62,6 +62,11 @@ enum SampleObjectCatalog {
         ("grey", UIColor(red: 0.55, green: 0.56, blue: 0.58, alpha: 1)),
         ("black", UIColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1))
     ]
+
+    static func color(named name: String?) -> UIColor? {
+        guard let name else { return nil }
+        return colors.first { $0.0 == name }?.1
+    }
 
     static func match(_ prompt: String) -> Match {
         let words = words(in: prompt)

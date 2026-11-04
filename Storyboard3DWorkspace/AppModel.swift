@@ -35,6 +35,7 @@ class AppModel {
         self.workspace = workspace
         self.animator = KeyframeAnimator(scene: workspace)
         workspace.setBase(BaseTemplateBuilder.make(.grass), size: baseMeters)
+        loadSavedProject()
     }
 
     // MARK: Table placement
@@ -134,9 +135,19 @@ class AppModel {
     }
 
     private(set) var base = BaseSummary(name: BaseTemplate.grass.name, origin: .template(.grass))
+    /// How to rebuild the current base (undo, reopening the app).
+    @ObservationIgnored private var baseRecipe: ModelRecipe = .baseTemplate(BaseTemplate.grass.rawValue)
     /// Diameter of the round base, in centimeters.
     var baseWidth: Double = BaseSizeLimits.defaultWidth {
-        didSet { workspace.setBaseSize(baseMeters) }
+        didSet {
+            workspace.setBaseSize(baseMeters)
+            documentChanged()
+        }
+    }
+
+    /// Call when the size slider is first touched, so one drag is one undo step.
+    func beginBaseResize() {
+        checkpoint()
     }
     private var baseMeters: Float { Float(baseWidth) / 100 }
 
@@ -145,6 +156,7 @@ class AppModel {
         guard let anchored = anchoredTable,
               let table = SpatialTrackingService.shared.tables[anchored.id]
         else { return }
+        checkpoint()
         let fitted = Double(min(table.width, table.depth)) * 100 * 0.9
         let stepped = (fitted / BaseSizeLimits.step).rounded(.down) * BaseSizeLimits.step
         baseWidth = min(max(stepped, BaseSizeLimits.range.lowerBound), BaseSizeLimits.range.upperBound)
@@ -159,10 +171,13 @@ class AppModel {
     }
 
     func applyBaseTemplate(_ template: BaseTemplate) {
+        checkpoint()
         workspace.setBase(BaseTemplateBuilder.make(template), size: baseMeters)
         base = BaseSummary(name: template.name, origin: .template(template))
+        baseRecipe = .baseTemplate(template.rawValue)
         baseNote = nil
         baseError = nil
+        documentChanged()
     }
 
     func generateBase() async {
@@ -174,9 +189,12 @@ class AppModel {
 
         do {
             let model = try await generationService.generateBase(prompt: prompt)
+            checkpoint()
             workspace.setBase(model.entity, size: baseMeters)
             base = BaseSummary(name: model.displayName, origin: .generated(model.source))
+            baseRecipe = model.recipe
             baseNote = model.note
+            documentChanged()
         } catch {
             baseError = error.localizedDescription
         }
@@ -185,13 +203,14 @@ class AppModel {
     // MARK: Objects
 
     struct ObjectSummary: Identifiable {
-        let id: Entity.ID
+        let id: ObjectID
         let name: String
         let source: ModelSource
+        let recipe: ModelRecipe
     }
 
     private(set) var objects: [ObjectSummary] = []
-    private(set) var selectedObjectID: Entity.ID?
+    private(set) var selectedObjectID: ObjectID?
     var objectPrompt = ""
     private(set) var isGeneratingObject = false
     private(set) var objectNote: String?
@@ -214,9 +233,11 @@ class AppModel {
 
         do {
             let model = try await generationService.generateObject(prompt: prompt)
-            let object = workspace.addObject(model.entity, name: model.displayName)
-            objects.append(ObjectSummary(id: object.id, name: model.displayName, source: model.source))
-            selectObject(object.id)
+            checkpoint()
+            let id = ObjectID()
+            workspace.addObject(model.entity, name: model.displayName, id: id)
+            objects.append(ObjectSummary(id: id, name: model.displayName, source: model.source, recipe: model.recipe))
+            selectObject(id)
             objectNote = model.note
             objectPrompt = ""
             sceneEdited()
@@ -228,37 +249,42 @@ class AppModel {
     func duplicateSelectedObject() {
         guard let summary = selectedObject, let object = workspace.object(withID: summary.id) else { return }
         animator.pause()
-        let copy = workspace.duplicate(object)
-        objects.append(ObjectSummary(id: copy.id, name: summary.name, source: summary.source))
-        selectObject(copy.id)
+        checkpoint()
+        let id = ObjectID()
+        workspace.duplicate(object, id: id)
+        objects.append(ObjectSummary(id: id, name: summary.name, source: summary.source, recipe: summary.recipe))
+        selectObject(id)
         sceneEdited()
     }
 
     func deleteSelectedObject() {
         guard let id = selectedObjectID, let object = workspace.object(withID: id) else { return }
         animator.pause()
+        checkpoint()
         workspace.remove(object)
         objects.removeAll { $0.id == id }
         selectObject(nil)
         // The object leaves every keyframe it was in, so those keyframes have changed.
         let changed = animator.removeObject(id)
         changed.forEach(detachPhotos(from:))
+        documentChanged()
     }
 
-    func selectObject(_ id: Entity.ID?) {
+    func selectObject(_ id: ObjectID?) {
         selectedObjectID = id
         workspace.showSelection(on: id.flatMap { workspace.object(withID: $0) })
     }
 
     func selectObject(containing entity: Entity) {
         if let object = workspace.object(containing: entity) {
-            selectObject(object.id)
+            selectObject(workspace.objectID(of: object))
         }
     }
 
     /// The user grabbed an object: stop playback so it doesn't fight their hands.
     func manipulationBegan(on entity: Entity) {
         animator.pause()
+        checkpoint()
         selectObject(containing: entity)
     }
 
@@ -268,8 +294,18 @@ class AppModel {
     private(set) var isLoadingBackground = false
     private(set) var backgroundError: String?
 
+    /// Identifies the stored copy of an imported backdrop; nil for the built-in sky.
+    @ObservationIgnored private var backdropFileID: UUID?
+    /// A backdrop read from the saved project, shown once the window appears.
+    @ObservationIgnored private var savedBackdrop: BackdropImage?
+
     func loadDefaultBackgroundIfNeeded() async {
         guard background == nil, !isLoadingBackground else { return }
+        if let savedBackdrop {
+            self.savedBackdrop = nil
+            await apply(savedBackdrop, isRestoredFromDisk: true)
+            return
+        }
         await useBuiltInSky()
     }
 
@@ -321,11 +357,19 @@ class AppModel {
         backgroundError = message
     }
 
-    private func apply(_ newBackground: BackdropImage) async {
+    /// - Parameter isRestoredFromDisk: True when re-showing the saved backdrop, whose
+    ///   stored copy already exists; a new import gets a new stored copy.
+    private func apply(_ newBackground: BackdropImage, isRestoredFromDisk: Bool = false) async {
         do {
             try await workspace.setBackdropImage(newBackground.image)
+            if newBackground.source == .builtInSky {
+                backdropFileID = nil
+            } else if !isRestoredFromDisk {
+                backdropFileID = UUID()
+            }
             background = newBackground
             backgroundError = nil
+            documentChanged()
         } catch {
             backgroundError = "That image couldn't be shown as a backdrop."
         }
@@ -352,7 +396,10 @@ class AppModel {
     @ObservationIgnored private var countdownTask: Task<Void, Never>?
 
     var captureLens: CaptureLens = .standard {
-        didSet { workspace.setViewfinderLens(captureLens) }
+        didSet {
+            workspace.setViewfinderLens(captureLens)
+            documentChanged()
+        }
     }
 
     /// The viewfinder shows whenever a photo can be lined up: on the Capture tab, on the
@@ -415,6 +462,7 @@ class AppModel {
         isCapturing = true
         defer { isCapturing = false }
 
+        checkpoint()
         // Decide the keyframe at the moment the shutter fires, and make sure it holds
         // exactly what's being photographed.
         let target = captureTarget
@@ -449,6 +497,7 @@ class AppModel {
                 captureStatus = .libraryOnly
             }
             slideshowURL = nil
+            documentChanged()
         } catch {
             captureStatus = .failed(error.localizedDescription)
         }
@@ -468,11 +517,13 @@ class AppModel {
     }
 
     func deletePhoto(_ photo: CapturedPhoto) {
+        checkpoint()
         photos.delete(photo)
         if selectedLibraryPhotoID == photo.id { selectedLibraryPhotoID = nil }
         if focusedKeyframePhotoID == photo.id { focusedKeyframePhotoID = nil }
         captureStatus = nil
         slideshowURL = nil
+        documentChanged()
     }
 
     // MARK: Keyframes and their photos
@@ -491,12 +542,12 @@ class AppModel {
 
     func addKeyframe() {
         // Finish saving edits into the current keyframe before starting a new one.
-        autoSaveTask?.cancel()
-        autoSaveSelectedKeyframe()
+        checkpoint()
         keyframeNotice = nil
         animator.addKeyframe()
         focusedKeyframePhotoID = nil
         slideshowURL = nil
+        documentChanged()
     }
 
     /// A short message after a keyframe's photos were detached by a change.
@@ -519,6 +570,7 @@ class AppModel {
             guard !Task.isCancelled else { return }
             self?.autoSaveSelectedKeyframe()
             self?.autoSaveTask = nil
+            self?.documentChanged()
         }
     }
 
@@ -541,37 +593,44 @@ class AppModel {
     }
 
     func deleteSelectedKeyframe() {
-        autoSaveTask?.cancel()
+        checkpoint()
         if let deleted = animator.deleteSelectedKeyframe() {
             photos.detachPhotos(from: deleted)
             focusedKeyframePhotoID = nil
             keyframeNotice = nil
             slideshowURL = nil
+            documentChanged()
         }
     }
 
     func selectKeyframe(_ keyframe: Keyframe) {
-        autoSaveTask?.cancel()
-        autoSaveSelectedKeyframe()
+        flushAutoSave()
         keyframeNotice = nil
         animator.select(keyframe)
         focusedKeyframePhotoID = nil
         captureStatus = nil
+        documentChanged()
     }
 
     func scrubTimeline(to time: TimeInterval) {
-        if autoSaveTask != nil {
-            autoSaveTask?.cancel()
-            autoSaveTask = nil
-            autoSaveSelectedKeyframe()
-        }
+        flushAutoSave()
         animator.scrub(to: time)
         focusedKeyframePhotoID = nil
     }
 
     func setPrimaryPhoto(_ photo: CapturedPhoto) {
+        checkpoint()
         photos.setPrimary(photo)
         slideshowURL = nil
+        documentChanged()
+    }
+
+    /// Finishes a pending auto-save right away instead of waiting for objects to settle.
+    private func flushAutoSave() {
+        guard autoSaveTask != nil else { return }
+        autoSaveTask?.cancel()
+        autoSaveTask = nil
+        autoSaveSelectedKeyframe()
     }
 
     // MARK: Slideshow export
@@ -608,6 +667,170 @@ class AppModel {
             slideshowURL = url
         } catch {
             slideshowError = error.localizedDescription
+        }
+    }
+
+    // MARK: Undo
+
+    private(set) var undoStack: [ProjectState] = []
+    private(set) var redoStack: [ProjectState] = []
+    private static let undoLimit = 50
+    /// True while a snapshot is being applied, so the changes it makes aren't recorded.
+    @ObservationIgnored private var isRestoring = false
+
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+
+    /// Records the project as it is now, just before an edit, so the edit can be undone.
+    private func checkpoint() {
+        guard !isRestoring else { return }
+        // A pending auto-save belongs to the previous edit; finish it first.
+        flushAutoSave()
+        let state = currentState()
+        if undoStack.last != state {
+            undoStack.append(state)
+            if undoStack.count > Self.undoLimit { undoStack.removeFirst() }
+        }
+        redoStack.removeAll()
+    }
+
+    func undo() {
+        flushAutoSave()
+        guard let previous = undoStack.popLast() else { return }
+        redoStack.append(currentState())
+        restore(previous)
+        documentChanged()
+    }
+
+    func redo() {
+        flushAutoSave()
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(currentState())
+        restore(next)
+        documentChanged()
+    }
+
+    // MARK: Snapshots
+
+    /// The project's editable content as a value.
+    func currentState() -> ProjectState {
+        let objectStates: [ProjectState.Object] = objects.compactMap { summary in
+            guard let entity = workspace.object(withID: summary.id) else { return nil }
+            return ProjectState.Object(id: summary.id, name: summary.name, source: summary.source,
+                                       recipe: summary.recipe, transform: CodableTransform(entity.transform),
+                                       isVisible: entity.isEnabled)
+        }
+        let generatedBy: ModelSource? = if case .generated(let source) = base.origin { source } else { nil }
+
+        return ProjectState(
+            base: .init(name: base.name, recipe: baseRecipe, generatedBy: generatedBy, diameterCentimeters: baseWidth),
+            objects: objectStates,
+            keyframes: animator.timeline.keyframes.map(ProjectState.KeyframeState.init),
+            selectedKeyframeID: animator.selectedKeyframeID,
+            photos: photos.photos.map { .init(id: $0.id, takenAt: $0.takenAt, lens: $0.lens, assignment: $0.assignment) },
+            primaryPhotoIDs: photos.primaryPhotoIDs
+        )
+    }
+
+    /// Makes the scene, keyframes, and photo library match a snapshot.
+    private func restore(_ state: ProjectState) {
+        isRestoring = true
+        defer { isRestoring = false }
+
+        animator.pause()
+        cancelCapture()
+        autoSaveTask?.cancel()
+        autoSaveTask = nil
+
+        // Base
+        if state.base.recipe != baseRecipe, let content = state.base.recipe.makeEntity() {
+            workspace.setBase(content, size: Float(state.base.diameterCentimeters) / 100)
+            baseRecipe = state.base.recipe
+        }
+        if let generatedBy = state.base.generatedBy {
+            base = BaseSummary(name: state.base.name, origin: .generated(generatedBy))
+        } else if case .baseTemplate(let name) = state.base.recipe, let template = BaseTemplate(rawValue: name) {
+            base = BaseSummary(name: state.base.name, origin: .template(template))
+        }
+        baseWidth = state.base.diameterCentimeters
+
+        // Objects: remove ones that shouldn't exist, rebuild missing ones, then pose all.
+        let wanted = Set(state.objects.map(\.id))
+        for summary in objects where !wanted.contains(summary.id) {
+            if let entity = workspace.object(withID: summary.id) { workspace.remove(entity) }
+        }
+        var summaries: [ObjectSummary] = []
+        for object in state.objects {
+            let entity: Entity
+            if let existing = workspace.object(withID: object.id) {
+                entity = existing
+            } else if let content = object.recipe.makeEntity() {
+                entity = workspace.addObject(content, name: object.name, id: object.id)
+            } else {
+                continue
+            }
+            entity.transform = object.transform.transform
+            entity.isEnabled = object.isVisible
+            summaries.append(ObjectSummary(id: object.id, name: object.name, source: object.source, recipe: object.recipe))
+        }
+        objects = summaries
+        let stillSelected = selectedObjectID.flatMap { workspace.object(withID: $0) } != nil
+        selectObject(stillSelected ? selectedObjectID : nil)
+
+        // Keyframes and photos
+        animator.restore(state.keyframes.map(Keyframe.init), selecting: state.selectedKeyframeID)
+        photos.restore(state.photos.map { (id: $0.id, assignment: $0.assignment) }, primaries: state.primaryPhotoIDs)
+
+        focusedKeyframePhotoID = nil
+        keyframeNotice = nil
+        slideshowURL = nil
+        captureStatus = nil
+        if photos.photo(selectedLibraryPhotoID) == nil { selectedLibraryPhotoID = nil }
+    }
+
+    // MARK: Saving
+
+    @ObservationIgnored private var saveTask: Task<Void, Never>?
+
+    /// Call after any change worth keeping. Saves shortly after edits stop.
+    private func documentChanged() {
+        guard !isRestoring else { return }
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            self?.saveNow()
+        }
+    }
+
+    /// Writes the project to disk immediately (also used when the app goes to the background).
+    func saveNow() {
+        saveTask?.cancel()
+        saveTask = nil
+        flushAutoSave()
+        let backdrop = background.map {
+            ProjectStore.SavedProject.Backdrop(name: $0.name, source: $0.source, fileID: backdropFileID)
+        }
+        let project = ProjectStore.SavedProject(state: currentState(), captureLens: captureLens, backdrop: backdrop)
+        do {
+            try ProjectStore.save(project, photos: photos.photos,
+                                  backdropImage: backdropFileID == nil ? nil : background?.image)
+        } catch {
+            print("Storyboard 3D couldn't save the project: \(error)")
+        }
+    }
+
+    private func loadSavedProject() {
+        guard let loaded = ProjectStore.load() else { return }
+        isRestoring = true
+        photos.load(loaded.photos, primaries: loaded.saved.state.primaryPhotoIDs)
+        captureLens = loaded.saved.captureLens
+        isRestoring = false
+        restore(loaded.saved.state)
+
+        if let backdrop = loaded.saved.backdrop, backdrop.source != .builtInSky, let image = loaded.backdropImage {
+            savedBackdrop = BackdropImage(name: backdrop.name, source: backdrop.source, image: image)
+            backdropFileID = backdrop.fileID
         }
     }
 }
