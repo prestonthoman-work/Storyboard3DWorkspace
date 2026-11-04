@@ -15,6 +15,9 @@ import UIKit
 ///     - `objectsContainer`: raised to the base's top surface
 ///       - one entity per placed object, each independently movable
 ///   - `backdrop`: a viewer-facing image plane, positioned by `ViewerFacingBackdropSystem`
+///
+/// `viewfinder` is separate: it's anchored to the viewer's head, so it's added to the
+/// RealityView content on its own rather than under `root`.
 final class WorkspaceScene {
     static let selectionIndicatorName = "SelectionIndicator"
     /// Wide enough to feel unlimited, while preventing objects from collapsing to nothing.
@@ -28,6 +31,11 @@ final class WorkspaceScene {
     let baseAnchor = Entity()
     let objectsContainer = Entity()
     let backdrop = ModelEntity()
+    /// A head-locked frame outlining exactly what a capture will include.
+    let viewfinder = AnchorEntity(.head)
+    private let viewfinderFrame = Entity()
+    /// How far in front of the eyes the viewfinder frame is drawn.
+    static let viewfinderDistance: Float = 0.5
 
     private let baseHolder = Entity()
     private var baseContent: Entity?
@@ -58,6 +66,40 @@ final class WorkspaceScene {
         backdrop.isEnabled = false
         backdrop.components.set(ViewerFacingBackdropComponent(target: baseAnchor))
         root.addChild(backdrop)
+
+        viewfinder.name = "Viewfinder"
+        viewfinder.isEnabled = false
+        viewfinder.addChild(viewfinderFrame)
+        setViewfinderLens(.standard)
+    }
+
+    // MARK: Viewfinder
+
+    func setViewfinderVisible(_ isVisible: Bool) {
+        viewfinder.isEnabled = isVisible
+    }
+
+    /// Redraws the frame to match the lens's field of view.
+    func setViewfinderLens(_ lens: CaptureLens) {
+        viewfinderFrame.children.removeAll()
+        let distance = Self.viewfinderDistance
+        let halfWidth = distance * tan(lens.horizontalFOV / 2)
+        let halfHeight = distance * tan(lens.verticalFOV / 2)
+        let line: Float = 0.0012
+
+        var material = UnlitMaterial(color: .white)
+        material.blending = .transparent(opacity: 0.75)
+        let edges: [(size: SIMD3<Float>, position: SIMD3<Float>)] = [
+            ([halfWidth * 2 + line, line, line], [0, halfHeight, -distance]),
+            ([halfWidth * 2 + line, line, line], [0, -halfHeight, -distance]),
+            ([line, halfHeight * 2 + line, line], [-halfWidth, 0, -distance]),
+            ([line, halfHeight * 2 + line, line], [halfWidth, 0, -distance])
+        ]
+        for edge in edges {
+            let entity = ModelEntity(mesh: .generateBox(size: edge.size), materials: [material])
+            entity.position = edge.position
+            viewfinderFrame.addChild(entity)
+        }
     }
 
     // MARK: Base placement

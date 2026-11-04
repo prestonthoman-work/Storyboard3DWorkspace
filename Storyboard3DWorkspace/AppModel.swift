@@ -73,6 +73,7 @@ class AppModel {
     }
 
     func workspaceDidClose() {
+        cancelCapture()
         searchTimeout?.cancel()
         searchTimeout = nil
         anchoredTable = nil
@@ -336,18 +337,66 @@ class AppModel {
     private(set) var isCapturing = false
     private(set) var isSavingCapture = false
     private(set) var captureStatus: CaptureStatus?
+    /// Seconds left on the self-timer, or nil when no countdown is running.
+    private(set) var captureCountdown: Int?
+    @ObservationIgnored private var countdownTask: Task<Void, Never>?
 
-    func captureComposition() async {
+    var captureLens: CaptureLens = .standard {
+        didSet { workspace.setViewfinderLens(captureLens) }
+    }
+
+    /// The viewfinder shows only while the Capture tab is open in the workspace.
+    var isViewfinderVisible: Bool {
+        immersiveSpaceState == .open && selectedTab == .capture
+    }
+
+    var canCapture: Bool {
+        background != nil && !isCapturing && captureCountdown == nil
+    }
+
+    /// Starts a 3-second self-timer, then captures from wherever the viewer is looking.
+    /// The timer gives them time to look away from this panel and back at their scene.
+    func startCapture() {
+        guard canCapture else { return }
+        captureStatus = nil
+        countdownTask = Task { [weak self] in
+            for remaining in [3, 2, 1] {
+                self?.captureCountdown = remaining
+                try? await Task.sleep(for: .seconds(1))
+                if Task.isCancelled { return }
+            }
+            self?.captureCountdown = nil
+            await self?.captureComposition()
+        }
+    }
+
+    func cancelCapture() {
+        countdownTask?.cancel()
+        countdownTask = nil
+        captureCountdown = nil
+    }
+
+    private func captureComposition() async {
         guard let background, !isCapturing else { return }
         isCapturing = true
-        captureStatus = nil
         defer { isCapturing = false }
+
+        let tracking = SpatialTrackingService.shared
+        let camera: CaptureCamera
+        if let head = tracking.viewerTransform {
+            camera = .level(fromHead: head, lens: captureLens)
+        } else {
+            // No head tracking (such as in Simulator): look at the base from a standing position.
+            camera = .looking(from: SpatialTrackingService.fallbackViewerPosition,
+                              at: workspace.baseAnchor.position(relativeTo: nil), lens: captureLens)
+        }
 
         do {
             let image = try await CompositionRenderer().render(
                 scene: workspace.baseAnchor,
+                backdrop: workspace.backdrop,
                 background: background.image,
-                viewerPosition: SpatialTrackingService.shared.viewerPosition
+                camera: camera
             )
             lastCapture = UIImage(cgImage: image)
         } catch {

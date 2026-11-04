@@ -12,12 +12,22 @@ struct ImmersiveView: View {
 
     @Environment(AppModel.self) private var appModel
 
+    private static let countdownAttachmentID = "countdown"
+
     var body: some View {
-        RealityView { content in
+        RealityView { content, attachments in
             let workspace = appModel.workspace
-            // The root may still be parented to a previous session's content.
+            // These may still be parented to a previous session's content.
             workspace.root.removeFromParent()
+            workspace.viewfinder.removeFromParent()
             content.add(workspace.root)
+            content.add(workspace.viewfinder)
+
+            // The self-timer count floats in the middle of the viewfinder.
+            if let countdown = attachments.entity(for: Self.countdownAttachmentID) {
+                countdown.position = [0, 0, -WorkspaceScene.viewfinderDistance]
+                workspace.viewfinder.addChild(countdown)
+            }
 
             workspace.subscriptions = [
                 content.subscribe(to: ManipulationEvents.WillBegin.self) { event in
@@ -36,6 +46,12 @@ struct ImmersiveView: View {
                     workspace.setHeld(false, for: event.entity)
                 }
             ]
+        } update: { _, _ in
+            appModel.workspace.setViewfinderVisible(appModel.isViewfinderVisible)
+        } attachments: {
+            Attachment(id: Self.countdownAttachmentID) {
+                CountdownBadge()
+            }
         }
         .gesture(
             SpatialTapGesture()
@@ -48,6 +64,20 @@ struct ImmersiveView: View {
         .onDisappear {
             appModel.workspaceDidClose()
             appModel.workspace.subscriptions.removeAll()
+        }
+    }
+}
+
+private struct CountdownBadge: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        if let remaining = appModel.captureCountdown {
+            Text("\(remaining)")
+                .font(.system(size: 56, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .frame(width: 96, height: 96)
+                .glassBackgroundEffect(in: Circle())
         }
     }
 }

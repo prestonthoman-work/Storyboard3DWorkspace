@@ -105,13 +105,19 @@ final class SpatialTrackingService {
     }
 
     var viewerPosition: SIMD3<Float> {
+        guard let transform = viewerTransform else { return Self.fallbackViewerPosition }
+        let translation = transform.columns.3
+        return SIMD3(translation.x, translation.y, translation.z)
+    }
+
+    /// The viewer's full head pose (position and facing direction), or nil when head
+    /// tracking isn't available. The device looks down its -Z axis with +Y up.
+    var viewerTransform: simd_float4x4? {
         guard let worldTracking, worldTracking.state == .running,
               let anchor = worldTracking.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()),
               anchor.isTracked
-        else { return Self.fallbackViewerPosition }
-
-        let translation = anchor.originFromAnchorTransform.columns.3
-        return SIMD3(translation.x, translation.y, translation.z)
+        else { return nil }
+        return anchor.originFromAnchorTransform
     }
 
     /// The detected table whose center is closest to `point` horizontally.

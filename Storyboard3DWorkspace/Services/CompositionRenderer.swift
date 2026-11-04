@@ -7,16 +7,14 @@ import CoreGraphics
 import Metal
 import RealityKit
 
-/// Renders the staged composition (base, objects, and backdrop) to a flat image, offscreen.
+/// Renders the staged composition (base, objects, and backdrop) to a flat image, offscreen,
+/// the way a Blender camera renders a scene.
 ///
-/// visionOS apps can't read the passthrough camera feed or screenshot their own
-/// immersive space, so capture uses a separate `RealityRenderer` scene instead: a copy
-/// of the base and its objects at their current poses, seen from the viewer's head position, against a
-/// backdrop plane sized to fill the frame. Passthrough and app windows can't appear
-/// in the output because they never enter that scene.
-///
-/// The viewpoint matches where the viewer is standing. The lens is chosen to frame the
-/// scene, so the result reads like a product shot rather than a wide-angle view.
+/// visionOS apps can't read the passthrough camera feed or screenshot their own immersive
+/// space, so capture builds a separate `RealityRenderer` scene: a copy of the base and its
+/// objects at their current poses, a copy of the backdrop exactly where the viewer sees
+/// it, studio lighting, and a camera placed at the viewer's head. Passthrough and app
+/// windows can't appear in the output because they never enter that scene.
 final class CompositionRenderer {
     enum RenderError: LocalizedError {
         case metalUnavailable
@@ -33,12 +31,16 @@ final class CompositionRenderer {
     static let outputWidth = 2560
     static let outputHeight = 1440
 
-    /// - Parameter scene: The base with its objects. Rendered at its current world pose.
-    func render(scene: Entity, background: CGImage, viewerPosition: SIMD3<Float>) async throws -> CGImage {
+    /// - Parameters:
+    ///   - scene: The base with its objects. Rendered at its current world pose.
+    ///   - backdrop: The live backdrop plane, copied at its current world pose.
+    ///   - background: The backdrop image, used if a frame-filling backdrop must be built instead.
+    ///   - camera: Where to render from.
+    func render(scene: Entity, backdrop: ModelEntity, background: CGImage,
+                camera captureCamera: CaptureCamera) async throws -> CGImage {
         guard let device = MTLCreateSystemDefaultDevice() else { throw RenderError.metalUnavailable }
 
         let renderer = try RealityRenderer()
-        let aspect = Float(Self.outputWidth) / Float(Self.outputHeight)
 
         // A copy of the staged scene, minus interaction-only pieces.
         let subject = scene.clone(recursive: true)
@@ -48,47 +50,27 @@ final class CompositionRenderer {
 
         let bounds = subject.visualBounds(relativeTo: nil)
         let center = bounds.isEmpty ? subject.position : bounds.center
-        let radius = max(bounds.isEmpty ? 0.3 : length(bounds.extents) / 2, 0.05)
+        let radius = max(bounds.isEmpty ? 0.3 : simd_length(bounds.extents) / 2, 0.05)
 
-        var toViewer = viewerPosition - center
-        if length(toViewer) < radius * 1.5 {
-            toViewer = normalize(length(toViewer) > 1e-4 ? toViewer : [0, 0, 1]) * radius * 3
-        }
-        let distance = length(toViewer)
-        let cameraPosition = center + toViewer
-        let cameraOrientation = simd_quatf.upright(facing: toViewer)
-
-        // Vertical field of view that frames the model with a comfortable margin.
-        // `radius` is a bounding sphere, which overstates flat models, hence the < 1 factor.
-        let halfFOV = min(max(atan(radius * 0.85 / distance), 0.09), 0.6)
         let camera = PerspectiveCamera()
-        camera.camera.fieldOfViewInDegrees = halfFOV * 2 * 180 / .pi
+        camera.camera.fieldOfViewInDegrees = captureCamera.lens.verticalFOV * 180 / .pi
         camera.camera.near = 0.01
         camera.camera.far = 100
-        camera.position = cameraPosition
-        camera.orientation = cameraOrientation
+        camera.position = captureCamera.position
+        camera.orientation = captureCamera.orientation
 
-        let backdrop = try await makeBackdrop(
+        let backdropCopy = try await makeBackdrop(
+            live: backdrop,
             image: background,
-            distanceFromCamera: distance + radius + BackdropLayout.gapBehindTarget,
-            halfFOV: halfFOV,
-            frameAspect: aspect,
-            cameraPosition: cameraPosition,
-            cameraOrientation: cameraOrientation
+            camera: captureCamera,
+            sceneCenter: center,
+            sceneRadius: radius
         )
 
-        let keyLight = DirectionalLight()
-        keyLight.light.intensity = 2600
-        keyLight.shadow = DirectionalLightComponent.Shadow()
-        // Above, behind, and to the left of the camera, aimed at the model.
-        let right = cameraOrientation.act([1, 0, 0])
-        let lightPosition = center + normalize(toViewer) * 1.0 - right * 0.8 + [0, 1.6, 0]
-        keyLight.orientation = simd_quatf.upright(facing: lightPosition - center)
-
-        renderer.entities.append(contentsOf: [subject, backdrop, keyLight, camera])
+        renderer.entities.append(contentsOf: [subject, backdropCopy, camera] + Self.studioLights(camera: captureCamera, center: center))
         renderer.activeCamera = camera
         renderer.lighting.resource = try await EnvironmentResource(equirectangular: Self.makeStudioEnvironment())
-        renderer.lighting.intensityExponent = 0.6
+        renderer.lighting.intensityExponent = 0.4
         renderer.cameraSettings.colorBackground = .color(CGColor(gray: 0, alpha: 1))
         renderer.cameraSettings.antialiasing = .multisample4X
 
@@ -127,38 +109,128 @@ final class CompositionRenderer {
         }
     }
 
-    /// An unlit plane perpendicular to the camera that aspect-fills the frame.
-    private func makeBackdrop(image: CGImage, distanceFromCamera: Float, halfFOV: Float, frameAspect: Float,
-                              cameraPosition: SIMD3<Float>, cameraOrientation: simd_quatf) async throws -> Entity {
+    // MARK: Backdrop
+
+    /// Copies the live backdrop so the image sits exactly where the viewer sees it. If its
+    /// edges would show inside the frame, it's enlarged around the point the camera looks
+    /// at, keeping that part of the image in place. If the camera doesn't face the backdrop
+    /// at all, a frame-filling plane is built behind the scene instead.
+    private func makeBackdrop(live: ModelEntity, image: CGImage, camera: CaptureCamera,
+                              sceneCenter: SIMD3<Float>, sceneRadius: Float) async throws -> Entity {
+        if live.isEnabled, let mesh = live.model?.mesh {
+            let copy = live.clone(recursive: false)
+            // The copy must hold still: the live system would otherwise re-aim it in the render scene.
+            copy.components.remove(ViewerFacingBackdropComponent.self)
+            copy.transform = Transform(matrix: live.transformMatrix(relativeTo: nil))
+            let halfSize = SIMD2(mesh.bounds.extents.x, mesh.bounds.extents.y) / 2
+
+            if let scale = Self.coverageScale(planeTransform: copy.transformMatrix(relativeTo: nil),
+                                              halfSize: halfSize, camera: camera) {
+                if scale > 1 {
+                    // Grow around the point on the plane where the camera's center ray lands.
+                    let axisHit = Self.hit(direction: camera.orientation.act([0, 0, -1]), from: camera.position,
+                                           planeTransform: copy.transformMatrix(relativeTo: nil))!
+                    let world = copy.transformMatrix(relativeTo: nil)
+                    let hitWorld = world * SIMD4(axisHit.x, axisHit.y, 0, 1)
+                    let newCenter = SIMD3(hitWorld.x, hitWorld.y, hitWorld.z)
+                        + (copy.position - SIMD3(hitWorld.x, hitWorld.y, hitWorld.z)) * scale
+                    copy.scale = SIMD3(repeating: scale)
+                    copy.position = newCenter
+                }
+                return copy
+            }
+        }
+
+        // Fallback: a plane perpendicular to the camera, behind the scene, filling the frame.
         let texture = try await TextureResource(image: image, withName: nil, options: .init(semantic: .color))
         var material = UnlitMaterial(applyPostProcessToneMap: false)
         material.color = .init(texture: .init(texture))
 
-        // Lay the plane out exactly as in the live scene (same size, raised by the same
-        // lift), so the same part of the image sits behind the scene.
+        let forward = camera.orientation.act([0, 0, -1])
+        let depth = max(simd_dot(sceneCenter - camera.position, forward), 0.2) + sceneRadius + BackdropLayout.gapBehindTarget
+        let frameHeight = 2 * depth * tan(camera.lens.verticalFOV / 2) * 1.02
+        let frameWidth = frameHeight * CaptureLens.aspect
         let imageAspect = Float(image.width) / Float(max(image.height, 1))
-        let liveSize = BackdropLayout.size(forAspect: imageAspect)
-        let half = liveSize / 2
-        let lift = BackdropLayout.lift(forHeight: liveSize.y)
+        let size: SIMD2<Float> = imageAspect > CaptureLens.aspect
+            ? [frameHeight * imageAspect, frameHeight]
+            : [frameWidth, frameWidth / imageAspect]
 
-        // If that plane doesn't fill the frame, grow it around the point behind the scene
-        // (where the camera looks) until it does, so no edge shows.
-        let frameHalfHeight = distanceFromCamera * tan(halfFOV) * 1.02
-        let frameHalfWidth = frameHalfHeight * frameAspect
-        let scale = max(1,
-                        frameHalfWidth / half.x,
-                        frameHalfHeight / (half.y - lift),
-                        frameHalfHeight / (half.y + lift))
-
-        let plane = ModelEntity(mesh: .generatePlane(width: liveSize.x * scale, height: liveSize.y * scale),
-                                materials: [material])
-        let behindScene = cameraPosition + cameraOrientation.act([0, 0, -distanceFromCamera])
-        plane.position = behindScene + cameraOrientation.act([0, lift * scale, 0])
-        plane.orientation = cameraOrientation
+        let plane = ModelEntity(mesh: .generatePlane(width: size.x, height: size.y), materials: [material])
+        plane.position = camera.position + forward * depth
+        plane.orientation = camera.orientation
         return plane
     }
 
-    /// A soft studio gradient used as image-based lighting for the model.
+    /// How much the plane must grow (about the camera's center-ray hit point) to fill
+    /// the frame. Nil when a frame corner ray misses the plane.
+    private static func coverageScale(planeTransform: simd_float4x4, halfSize: SIMD2<Float>,
+                                      camera: CaptureCamera) -> Float? {
+        guard let center = hit(direction: camera.orientation.act([0, 0, -1]), from: camera.position,
+                               planeTransform: planeTransform),
+              abs(center.x) < halfSize.x, abs(center.y) < halfSize.y
+        else { return nil }
+
+        let tanV = tan(camera.lens.verticalFOV / 2)
+        let tanH = tanV * CaptureLens.aspect
+        var scale: Float = 1
+        for corner: SIMD2<Float> in [[-1, -1], [1, -1], [1, 1], [-1, 1]] {
+            let local = simd_normalize(SIMD3(corner.x * tanH, corner.y * tanV, -1))
+            guard let point = hit(direction: camera.orientation.act(local), from: camera.position,
+                                  planeTransform: planeTransform)
+            else { return nil }
+            for axis in 0..<2 {
+                let offset = point[axis] - center[axis]
+                let room = offset > 0 ? halfSize[axis] - center[axis] : halfSize[axis] + center[axis]
+                scale = max(scale, abs(offset) / room * 1.02)
+            }
+        }
+        return scale
+    }
+
+    /// Where a ray meets the plane, in the plane's local 2D coordinates. Nil if it misses
+    /// or the plane is behind the camera.
+    private static func hit(direction: SIMD3<Float>, from origin: SIMD3<Float>,
+                            planeTransform: simd_float4x4) -> SIMD2<Float>? {
+        let normal = simd_normalize(SIMD3(planeTransform.columns.2.x, planeTransform.columns.2.y, planeTransform.columns.2.z))
+        let planePoint = SIMD3(planeTransform.columns.3.x, planeTransform.columns.3.y, planeTransform.columns.3.z)
+        let denominator = simd_dot(direction, normal)
+        guard abs(denominator) > 1e-4 else { return nil }
+        let distance = simd_dot(planePoint - origin, normal) / denominator
+        guard distance > 0 else { return nil }
+        let world = origin + direction * distance
+        let local = planeTransform.inverse * SIMD4(world, 1)
+        return SIMD2(local.x, local.y)
+    }
+
+    // MARK: Lighting
+
+    /// Classic three-point lighting placed relative to the camera: a shadow-casting key
+    /// light above and to the left, a soft fill from the right, and a rim light from
+    /// behind that separates the scene from the backdrop.
+    private static func studioLights(camera: CaptureCamera, center: SIMD3<Float>) -> [Entity] {
+        let right = camera.orientation.act([1, 0, 0])
+        var back = center - camera.position
+        back.y = 0
+        back = simd_length(back) > 1e-3 ? simd_normalize(back) : [0, 0, -1]
+        let up = SIMD3<Float>(0, 1, 0)
+
+        func light(intensity: Float, from offset: SIMD3<Float>, shadows: Bool) -> DirectionalLight {
+            let light = DirectionalLight()
+            light.light.intensity = intensity
+            if shadows { light.shadow = DirectionalLightComponent.Shadow() }
+            // A directional light shines down its -Z axis.
+            light.orientation = .upright(facing: offset)
+            return light
+        }
+
+        return [
+            light(intensity: 2600, from: -back * 0.8 - right * 0.9 + up * 1.6, shadows: true),
+            light(intensity: 800, from: -back * 1.0 + right * 1.0 + up * 0.4, shadows: false),
+            light(intensity: 1400, from: back * 1.0 + up * 1.2, shadows: false)
+        ]
+    }
+
+    /// A soft studio gradient used as image-based lighting for the scene.
     private static func makeStudioEnvironment() -> CGImage {
         let width = 512
         let height = 256
