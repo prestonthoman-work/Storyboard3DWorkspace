@@ -26,6 +26,21 @@ final class KeyframeAnimator {
 
     var selectedKeyframe: Keyframe? { timeline.keyframe(selectedKeyframeID) }
 
+    /// 1-based position of a keyframe in the timeline, for display.
+    func number(of id: Keyframe.ID) -> Int? {
+        timeline.keyframes.firstIndex { $0.id == id }.map { $0 + 1 }
+    }
+
+    /// The keyframe the scene is posed at right now, if any. Every object must match
+    /// the keyframe's saved pose, and no object may be missing or extra. A photo taken
+    /// now truly shows this keyframe only when this returns it.
+    func keyframeMatchingScene() -> Keyframe? {
+        guard !isPlaying,
+              let candidate = selectedKeyframe ?? timeline.keyframe(near: playhead)
+        else { return nil }
+        return KeyframeTimeline.posesMatch(candidate.poses, scene.currentPoses()) ? candidate : nil
+    }
+
     // MARK: Editing
 
     func addKeyframe() {
@@ -35,18 +50,27 @@ final class KeyframeAnimator {
         playhead = keyframe.time
     }
 
-    func updateSelectedKeyframe() {
-        guard let id = selectedKeyframeID else { return }
-        timeline.update(id, with: scene.currentPoses())
+    /// Saves the current arrangement into the selected keyframe.
+    /// - Returns: The keyframe's ID if its poses actually changed.
+    @discardableResult
+    func updateSelectedKeyframe() -> Keyframe.ID? {
+        guard let keyframe = selectedKeyframe else { return nil }
+        let poses = scene.currentPoses()
+        guard !KeyframeTimeline.posesMatch(keyframe.poses, poses) else { return nil }
+        timeline.update(keyframe.id, with: poses)
+        return keyframe.id
     }
 
-    func deleteSelectedKeyframe() {
-        guard let id = selectedKeyframeID else { return }
+    /// - Returns: The deleted keyframe's ID.
+    @discardableResult
+    func deleteSelectedKeyframe() -> Keyframe.ID? {
+        guard let id = selectedKeyframeID else { return nil }
         pause()
         timeline.remove(id)
         selectedKeyframeID = nil
         playhead = min(playhead, timeline.duration)
         applyPlayhead()
+        return id
     }
 
     func select(_ keyframe: Keyframe) {

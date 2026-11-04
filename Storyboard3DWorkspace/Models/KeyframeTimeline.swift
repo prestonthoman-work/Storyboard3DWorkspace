@@ -55,6 +55,19 @@ struct KeyframeTimeline {
         keyframes.first { abs($0.time - time) <= tolerance }
     }
 
+    /// True when both snapshots hold the same objects in the same poses, within small
+    /// tolerances (a couple of millimeters, about a degree).
+    static func posesMatch(_ a: [Entity.ID: Transform], _ b: [Entity.ID: Transform]) -> Bool {
+        guard Set(a.keys) == Set(b.keys) else { return false }
+        for (id, poseA) in a {
+            guard let poseB = b[id] else { return false }
+            if simd_distance(poseA.translation, poseB.translation) > 0.002 { return false }
+            if simd_distance(poseA.scale, poseB.scale) > 0.002 { return false }
+            if abs(simd_dot(poseA.rotation.vector, poseB.rotation.vector)) < 0.99996 { return false }
+        }
+        return true
+    }
+
     /// Every object's interpolated pose at `time`.
     func poses(at time: TimeInterval) -> [Entity.ID: Transform] {
         let objectIDs = Set(keyframes.flatMap { $0.poses.keys })

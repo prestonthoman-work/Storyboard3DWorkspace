@@ -77,5 +77,5 @@ private struct PanelPage<Content: View>: View {
 #Preview(windowStyle: .automatic) {
     WorkspacePanel()
         .environment(AppModel())
-        .frame(width: 480, height: 560)
+        .frame(width: 500, height: 680)
 }

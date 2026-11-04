@@ -329,11 +329,16 @@ class AppModel {
     // MARK: Capture
 
     enum CaptureStatus: Equatable {
+        case attached(keyframeNumber: Int)
+        case libraryOnly
         case saved
         case failed(String)
     }
 
-    private(set) var lastCapture: UIImage?
+    /// Every photo taken this session.
+    let photos = PhotoLibrary()
+    /// The photo shown large in the Capture tab.
+    var selectedLibraryPhotoID: CapturedPhoto.ID?
     private(set) var isCapturing = false
     private(set) var isSavingCapture = false
     private(set) var captureStatus: CaptureStatus?
@@ -352,6 +357,18 @@ class AppModel {
 
     var canCapture: Bool {
         background != nil && !isCapturing && captureCountdown == nil
+    }
+
+    var selectedLibraryPhoto: CapturedPhoto? {
+        photos.photo(selectedLibraryPhotoID) ?? photos.photos.last
+    }
+
+    /// The keyframe a photo taken right now would attach to, and its number.
+    var captureTarget: (keyframe: Keyframe, number: Int)? {
+        guard let keyframe = animator.keyframeMatchingScene(),
+              let number = animator.number(of: keyframe.id)
+        else { return nil }
+        return (keyframe, number)
     }
 
     /// Starts a 3-second self-timer, then captures from wherever the viewer is looking.
@@ -376,10 +393,19 @@ class AppModel {
         captureCountdown = nil
     }
 
+    /// From the Animate tab: take a photo of the selected keyframe.
+    func takePhotoForSelectedKeyframe() {
+        selectedTab = .capture
+        startCapture()
+    }
+
     private func captureComposition() async {
         guard let background, !isCapturing else { return }
         isCapturing = true
         defer { isCapturing = false }
+
+        // Decide the keyframe at the moment the shutter fires, before anything can move.
+        let target = captureTarget
 
         let tracking = SpatialTrackingService.shared
         let camera: CaptureCamera
@@ -398,22 +424,131 @@ class AppModel {
                 background: background.image,
                 camera: camera
             )
-            lastCapture = UIImage(cgImage: image)
+            guard let photo = photos.add(image, lens: captureLens, keyframe: target?.keyframe.id) else {
+                captureStatus = .failed("The capture couldn't be saved.")
+                return
+            }
+            selectedLibraryPhotoID = photo.id
+            if let target {
+                focusedKeyframePhotoID = photo.id
+                captureStatus = .attached(keyframeNumber: target.number)
+            } else {
+                captureStatus = .libraryOnly
+            }
+            slideshowURL = nil
         } catch {
             captureStatus = .failed(error.localizedDescription)
         }
     }
 
-    func saveCaptureToPhotos() async {
-        guard let lastCapture, !isSavingCapture else { return }
+    func saveSelectedPhotoToPhotos() async {
+        guard let photo = selectedLibraryPhoto, let image = photos.image(for: photo), !isSavingCapture else { return }
         isSavingCapture = true
         defer { isSavingCapture = false }
 
         do {
-            try await PhotoLibrarySaver.save(lastCapture)
+            try await PhotoLibrarySaver.save(image)
             captureStatus = .saved
         } catch {
             captureStatus = .failed(error.localizedDescription)
+        }
+    }
+
+    func deletePhoto(_ photo: CapturedPhoto) {
+        photos.delete(photo)
+        if selectedLibraryPhotoID == photo.id { selectedLibraryPhotoID = nil }
+        if focusedKeyframePhotoID == photo.id { focusedKeyframePhotoID = nil }
+        captureStatus = nil
+        slideshowURL = nil
+    }
+
+    // MARK: Keyframes and their photos
+
+    /// The photo shown large in the Animate tab for the selected keyframe.
+    var focusedKeyframePhotoID: CapturedPhoto.ID?
+
+    /// The selected keyframe's photo to show: the one the person tapped, else its primary.
+    var focusedKeyframePhoto: CapturedPhoto? {
+        guard let keyframe = animator.selectedKeyframe else { return nil }
+        if let focused = photos.photo(focusedKeyframePhotoID), focused.keyframeID == keyframe.id {
+            return focused
+        }
+        return photos.primaryPhoto(for: keyframe.id)
+    }
+
+    func addKeyframe() {
+        animator.addKeyframe()
+        focusedKeyframePhotoID = nil
+        slideshowURL = nil
+    }
+
+    /// Saving a new pose into a keyframe means its photos no longer show it, so they're
+    /// detached (they stay in the library).
+    func updateSelectedKeyframe() {
+        if let changed = animator.updateSelectedKeyframe() {
+            photos.detachPhotos(from: changed)
+            focusedKeyframePhotoID = nil
+            slideshowURL = nil
+        }
+    }
+
+    func deleteSelectedKeyframe() {
+        if let deleted = animator.deleteSelectedKeyframe() {
+            photos.detachPhotos(from: deleted)
+            focusedKeyframePhotoID = nil
+            slideshowURL = nil
+        }
+    }
+
+    func selectKeyframe(_ keyframe: Keyframe) {
+        animator.select(keyframe)
+        focusedKeyframePhotoID = nil
+    }
+
+    func scrubTimeline(to time: TimeInterval) {
+        animator.scrub(to: time)
+        focusedKeyframePhotoID = nil
+    }
+
+    func setPrimaryPhoto(_ photo: CapturedPhoto) {
+        photos.setPrimary(photo)
+        slideshowURL = nil
+    }
+
+    // MARK: Slideshow export
+
+    private(set) var isExportingSlideshow = false
+    private(set) var slideshowURL: URL?
+    private(set) var slideshowError: String?
+
+    /// How many keyframes have a primary photo, out of all keyframes.
+    var slideshowCoverage: (withPhoto: Int, total: Int) {
+        let keyframes = animator.timeline.keyframes
+        return (keyframes.filter { photos.primaryPhoto(for: $0.id) != nil }.count, keyframes.count)
+    }
+
+    /// Exports an MP4 of each keyframe's primary photo, in timeline order. Keyframes
+    /// without a photo are skipped; other photos taken at a keyframe aren't included.
+    func exportSlideshow() async {
+        guard !isExportingSlideshow else { return }
+        let slides = animator.timeline.keyframes
+            .compactMap { photos.primaryPhoto(for: $0.id) }
+            .compactMap { photos.image(for: $0)?.cgImage }
+        guard !slides.isEmpty else { return }
+
+        isExportingSlideshow = true
+        slideshowError = nil
+        slideshowURL = nil
+        defer { isExportingSlideshow = false }
+
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Storyboard Slideshow.mp4")
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try await SlideshowExporter.export(slides, to: url)
+            }.value
+            slideshowURL = url
+        } catch {
+            slideshowError = error.localizedDescription
         }
     }
 }
