@@ -38,26 +38,22 @@ nonisolated enum SlideshowExporter {
             AVVideoWidthKey: width,
             AVVideoHeightKey: height
         ])
-        input.expectsMediaDataInRealTime = false
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: width,
-            kCVPixelBufferHeightKey as String: height
-        ])
-        writer.add(input)
-        guard writer.startWriting() else { throw ExportError.writerFailed }
+        let attributes = CVPixelBufferCreationAttributes(
+            pixelFormatType: CVPixelFormatType(rawValue: kCVPixelFormatType_32BGRA),
+            size: CVImageSize(width: width, height: height)
+        )
+        // The receiver adds the input to the writer; its `append` waits until the
+        // writer is ready, so no polling is needed.
+        let receiver = writer.inputPixelBufferReceiver(for: input, pixelBufferAttributes: attributes)
+        try writer.start()
         writer.startSession(atSourceTime: .zero)
 
         let holdFrames = Int(secondsPerSlide * Double(framesPerSecond))
         let fadeFrames = slides.count > 1 ? Int(crossfadeSeconds * Double(framesPerSecond)) : 0
         var frameIndex: Int64 = 0
 
-        func append(_ buffer: CVPixelBuffer) async throws {
-            while !input.isReadyForMoreMediaData {
-                try await Task.sleep(for: .milliseconds(5))
-            }
-            let time = CMTime(value: frameIndex, timescale: framesPerSecond)
-            guard adaptor.append(buffer, withPresentationTime: time) else { throw ExportError.writerFailed }
+        func append(_ frame: CVReadOnlyPixelBuffer) async throws {
+            try await receiver.append(frame, with: CMTime(value: frameIndex, timescale: framesPerSecond))
             frameIndex += 1
         }
 
@@ -65,7 +61,7 @@ nonisolated enum SlideshowExporter {
             let next = index + 1 < slides.count ? slides[index + 1] : nil
 
             // The still frame is drawn once and reused for every held frame.
-            let still = try makeFrame(adaptor: adaptor) { context in
+            let still = try makeFrame(pool: receiver.pixelBufferPool, attributes: attributes) { context in
                 draw(slide, in: context, alpha: 1)
             }
             for _ in 0..<(next == nil ? holdFrames : holdFrames - fadeFrames) {
@@ -75,7 +71,7 @@ nonisolated enum SlideshowExporter {
             if let next {
                 for step in 0..<fadeFrames {
                     let progress = CGFloat(step + 1) / CGFloat(fadeFrames + 1)
-                    let frame = try makeFrame(adaptor: adaptor) { context in
+                    let frame = try makeFrame(pool: receiver.pixelBufferPool, attributes: attributes) { context in
                         draw(slide, in: context, alpha: 1)
                         draw(next, in: context, alpha: progress)
                     }
@@ -84,32 +80,40 @@ nonisolated enum SlideshowExporter {
             }
         }
 
-        input.markAsFinished()
+        receiver.finish()
         await writer.finishWriting()
         guard writer.status == .completed else { throw ExportError.writerFailed }
     }
 
-    private static func makeFrame(adaptor: AVAssetWriterInputPixelBufferAdaptor,
-                                  draw: (CGContext) -> Void) throws -> CVPixelBuffer {
-        guard let pool = adaptor.pixelBufferPool else { throw ExportError.writerFailed }
-        var buffer: CVPixelBuffer?
-        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
-        guard let buffer else { throw ExportError.writerFailed }
+    /// Draws one video frame into a fresh pixel buffer and hands it back read-only.
+    private static func makeFrame(pool: CVMutablePixelBuffer.Pool?,
+                                  attributes: CVPixelBufferCreationAttributes,
+                                  draw: (CGContext) -> Void) throws -> CVReadOnlyPixelBuffer {
+        let frame: CVMutablePixelBuffer
+        if let pool {
+            frame = try pool.makeMutablePixelBuffer()
+        } else {
+            frame = try CVMutablePixelBuffer(attributes)
+        }
 
-        CVPixelBufferLockBaseAddress(buffer, [])
-        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
-        guard let context = CGContext(
-            data: CVPixelBufferGetBaseAddress(buffer),
-            width: width, height: height, bitsPerComponent: 8,
-            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
-            space: CGColorSpace(name: CGColorSpace.sRGB)!,
-            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        ) else { throw ExportError.writerFailed }
+        let didDraw = frame.withUnsafeBuffer { buffer -> Bool in
+            CVPixelBufferLockBaseAddress(buffer, [])
+            defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+            guard let context = CGContext(
+                data: CVPixelBufferGetBaseAddress(buffer),
+                width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+            ) else { return false }
 
-        context.setFillColor(CGColor(gray: 0, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        draw(context)
-        return buffer
+            context.setFillColor(CGColor(gray: 0, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            draw(context)
+            return true
+        }
+        guard didDraw else { throw ExportError.writerFailed }
+        return CVReadOnlyPixelBuffer(frame)
     }
 
     /// Draws `image` to fill the frame, cropping any excess.
