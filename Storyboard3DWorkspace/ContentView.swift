@@ -16,7 +16,7 @@ struct ContentView: View {
             if appModel.immersiveSpaceState == .open {
                 WorkspacePanel()
             } else {
-                WelcomeView()
+                ProjectsView()
             }
         }
         .frame(width: 500, height: 680)

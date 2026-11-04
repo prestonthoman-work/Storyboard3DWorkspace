@@ -143,6 +143,13 @@ private struct SelectedKeyframeShot: View {
                     .scrollIndicators(.hidden)
                 }
 
+                TextField("Shot notes", text: Binding(
+                    get: { keyframe.note },
+                    set: { appModel.setNote($0, forKeyframe: keyframe.id) }
+                ), axis: .vertical)
+                .lineLimit(1...3)
+                .textFieldStyle(.roundedBorder)
+
                 CaptureControls(shutterTitle: "Take Photo") {
                     appModel.takePhotoForSelectedKeyframe()
                 }
@@ -244,26 +251,33 @@ private struct StoryboardCard: View {
     }
 }
 
-/// Exports the primary photo of each keyframe as a video slideshow.
+/// Exports the storyboard as a slideshow video or a printable PDF sheet.
 private struct ExportButton: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        Button {
-            Task { await appModel.exportSlideshow() }
+        Menu {
+            Button("Slideshow Video", systemImage: "film") {
+                Task { await appModel.exportSlideshow() }
+            }
+            .disabled(appModel.slideshowCoverage.withPhoto == 0)
+
+            Button("Storyboard Sheet (PDF)", systemImage: "doc.richtext") {
+                appModel.exportStoryboardSheet()
+            }
         } label: {
-            if appModel.isExportingSlideshow {
+            if appModel.isExporting {
                 ProgressView()
             } else {
-                Label("Export", systemImage: "film.stack")
+                Label("Export", systemImage: "square.and.arrow.up")
             }
         }
-        .disabled(appModel.slideshowCoverage.withPhoto == 0 || appModel.isExportingSlideshow)
-        .help("Export a slideshow of each keyframe's primary photo")
+        .disabled(appModel.animator.timeline.keyframes.isEmpty || appModel.isExporting)
+        .help("Export a slideshow video or a printable storyboard sheet")
     }
 }
 
-/// After exporting: a way to share the slideshow, and which keyframes it covers.
+/// After exporting: a way to share the file. Before: what each export contains.
 private struct SlideshowExportStatus: View {
     @Environment(AppModel.self) private var appModel
 
@@ -271,19 +285,19 @@ private struct SlideshowExportStatus: View {
         let coverage = appModel.slideshowCoverage
 
         VStack(alignment: .leading, spacing: 8) {
-            if let url = appModel.slideshowURL {
-                ShareLink(item: url) {
-                    Label("Share Slideshow", systemImage: "square.and.arrow.up")
+            if let file = appModel.exportedFile {
+                ShareLink(item: file.url) {
+                    Label(file.shareTitle, systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.bordered)
             }
 
-            if let error = appModel.slideshowError {
+            if let error = appModel.exportError {
                 Text(error).font(.footnote).foregroundStyle(.red)
             } else if coverage.total > 0 {
                 Text(coverage.withPhoto == coverage.total
-                     ? "Export makes a slideshow of each keyframe's primary photo."
-                     : "Export makes a slideshow of each keyframe's primary photo. \(coverage.withPhoto) of \(coverage.total) keyframes have one; the rest are skipped.")
+                     ? "Export a slideshow of each keyframe's primary photo, or a printable sheet with your notes."
+                     : "Export a slideshow of each keyframe's primary photo, or a printable sheet with your notes. \(coverage.withPhoto) of \(coverage.total) keyframes have a photo; the slideshow skips the rest.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

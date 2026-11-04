@@ -22,11 +22,16 @@ struct GravitySurfaceComponent: Component {
     var baseHeight: Float
 }
 
-/// Drops released objects straight down until their lowest point touches the surface
-/// below them, and stops any object, held or not, from sinking beneath it.
+/// Drops released objects straight down until their lowest point touches whatever is
+/// beneath them, and stops any object, held or not, from sinking into it.
+///
+/// What's beneath can be the base, the table past the base's edge, or another object:
+/// objects stack. An object counts as a support when their footprints overlap and its
+/// top is below the falling object's middle. So an object released overlapping the top
+/// of another settles onto it, while one released deep inside another drops through.
 ///
 /// Only position changes: rotation is never touched, so a tilted object lands tilted
-/// rather than toppling. There's no stacking; everything lands on the base or table.
+/// rather than toppling. Shapes are approximated by axis-aligned boxes.
 struct ObjectGravitySystem: System {
     static let gravity: Float = 9.8
     /// Paused during animation playback so falling doesn't fight the keyframes.
@@ -40,10 +45,11 @@ struct ObjectGravitySystem: System {
     func update(context: SceneUpdateContext) {
         // Cap the step so a hitch doesn't launch an object through the floor.
         let deltaTime = Float(min(context.deltaTime, 1.0 / 30))
+        let objects = Array(context.entities(matching: Self.query, updatingSystemWhen: .rendering))
 
-        for object in context.entities(matching: Self.query, updatingSystemWhen: .rendering) {
+        for object in objects {
             guard var gravity = object.components[ObjectGravityComponent.self],
-                  let gap = Self.gapAboveSurface(of: object)
+                  let gap = Self.gapBelow(object, among: objects)
             else { continue }
 
             if gap < 0 {
@@ -61,32 +67,53 @@ struct ObjectGravitySystem: System {
         }
     }
 
-    /// Raises `object` if it has been pushed below the surface. Used right after each
-    /// manipulation update so a held object never visibly dips under the base.
+    /// Raises `object` if it has been pushed into the surface or an object below it. Used
+    /// right after each manipulation update so a held object never visibly dips into them.
     static func keepAboveSurface(_ object: Entity) {
-        guard let gap = gapAboveSurface(of: object), gap < 0 else { return }
+        let siblings = object.parent?.children.filter {
+            $0.isEnabled && $0.components.has(ObjectGravityComponent.self)
+        } ?? []
+        guard let gap = gapBelow(object, among: Array(siblings)), gap < 0 else { return }
         object.position.y -= gap
     }
 
-    /// Distance from the object's lowest point down to the surface below it, in the
-    /// container's space. Negative when the object is sunk into the surface.
-    private static func gapAboveSurface(of object: Entity) -> Float? {
+    /// Distance from the object's lowest point down to whatever supports it, in the
+    /// container's space. Negative when the object is sunk into its support.
+    private static func gapBelow(_ object: Entity, among objects: [Entity]) -> Float? {
         guard let container = object.parent,
-              let surface = container.components[GravitySurfaceComponent.self]
+              let surface = container.components[GravitySurfaceComponent.self],
+              let bounds = geometryBounds(of: object, in: container)
         else { return nil }
 
-        // Measure only the object's geometry, not the selection ring that may be attached to it.
-        let geometry = object.children.filter { $0.name != WorkspaceScene.selectionIndicatorName }
+        let isOverBase = simd_length(SIMD2(bounds.center.x, bounds.center.z)) <= surface.baseRadius
+        var floor: Float = isOverBase ? 0 : -surface.baseHeight
+
+        for other in objects where other != object && other.parent == container {
+            guard let otherBounds = geometryBounds(of: other, in: container),
+                  footprintsOverlap(bounds, otherBounds),
+                  otherBounds.max.y <= bounds.center.y
+            else { continue }
+            floor = max(floor, otherBounds.max.y)
+        }
+        return bounds.min.y - floor
+    }
+
+    /// Bounds of the object's geometry only, not the selection ring that may be attached to it.
+    private static func geometryBounds(of object: Entity, in container: Entity) -> BoundingBox? {
         var bounds: BoundingBox?
-        for child in geometry {
+        for child in object.children where child.name != WorkspaceScene.selectionIndicatorName {
             let childBounds = child.visualBounds(relativeTo: container, excludeInactive: true)
             guard !childBounds.isEmpty else { continue }
             bounds = bounds.map { $0.union(childBounds) } ?? childBounds
         }
-        guard let bounds else { return nil }
+        return bounds
+    }
 
-        let isOverBase = simd_length(SIMD2(bounds.center.x, bounds.center.z)) <= surface.baseRadius
-        let floor: Float = isOverBase ? 0 : -surface.baseHeight
-        return bounds.min.y - floor
+    /// Whether two boxes overlap when seen from above, ignoring a thin margin so objects
+    /// that merely touch side by side don't stack on each other's edges.
+    private static func footprintsOverlap(_ a: BoundingBox, _ b: BoundingBox) -> Bool {
+        let margin: Float = 0.002
+        return a.min.x + margin < b.max.x && a.max.x - margin > b.min.x
+            && a.min.z + margin < b.max.z && a.max.z - margin > b.min.z
     }
 }

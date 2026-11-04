@@ -43,17 +43,18 @@ struct CapturePanel: View {
         }
 
         if let photo {
+            Text(PhotoLibraryGrid.label(for: photo, in: appModel) + " · \(photo.lens.label)")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
             HStack(spacing: 10) {
-                Text(PhotoLibraryGrid.label(for: photo, in: appModel) + " · \(photo.lens.label)")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Spacer()
                 Button {
                     Task { await appModel.saveSelectedPhotoToPhotos() }
                 } label: {
-                    Label("Save to Photos", systemImage: "square.and.arrow.down")
+                    Label("Save", systemImage: "square.and.arrow.down")
                 }
                 .disabled(appModel.isSavingCapture)
+                .help("Save to your Photos library")
 
                 if let image = appModel.photos.image(for: photo) {
                     let shareable = Image(uiImage: image)
@@ -66,7 +67,6 @@ struct CapturePanel: View {
                     appModel.deletePhoto(photo)
                 }
             }
-            .labelStyle(.iconOnly)
             .buttonStyle(.bordered)
         }
     }

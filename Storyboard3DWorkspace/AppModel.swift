@@ -35,7 +35,99 @@ class AppModel {
         self.workspace = workspace
         self.animator = KeyframeAnimator(scene: workspace)
         workspace.setBase(BaseTemplateBuilder.make(.grass), size: baseMeters)
-        loadSavedProject()
+        refreshProjects()
+    }
+
+    // MARK: Projects
+
+    /// Every saved project, most recently edited first.
+    private(set) var projects: [ProjectStore.Info] = []
+    /// The project open in the workspace.
+    private(set) var currentProject: ProjectStore.Info?
+    private(set) var projectError: String?
+
+    var projectName: String { currentProject?.name ?? "Storyboard" }
+
+    func refreshProjects() {
+        projects = ProjectStore.list()
+    }
+
+    func createProject() async {
+        saveNow()
+        let existing = Set(projects.map(\.name))
+        var number = projects.count + 1
+        while existing.contains("Storyboard \(number)") { number += 1 }
+        do {
+            let info = try ProjectStore.create(name: "Storyboard \(number)")
+            await load(info)
+        } catch {
+            projectError = "A new project couldn't be created."
+        }
+    }
+
+    func openProject(_ info: ProjectStore.Info) async {
+        guard currentProject?.id != info.id else { return }
+        saveNow()
+        await load(info)
+    }
+
+    func renameProject(_ id: UUID, to name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        try? ProjectStore.rename(id, to: name)
+        if currentProject?.id == id { currentProject?.name = name }
+        refreshProjects()
+    }
+
+    func deleteProject(_ id: UUID) {
+        try? ProjectStore.delete(id)
+        if currentProject?.id == id {
+            currentProject = nil
+            resetToEmptyProject()
+        }
+        refreshProjects()
+    }
+
+    /// Clears everything, then loads a project's saved content (if it has any).
+    private func load(_ info: ProjectStore.Info) async {
+        resetToEmptyProject()
+        currentProject = info
+        selectedTab = .base
+
+        var restoredBackdrop: BackdropImage?
+        if let loaded = ProjectStore.load(info.id) {
+            isRestoring = true
+            photos.load(loaded.photos, primaries: loaded.saved.state.primaryPhotoIDs)
+            captureLens = loaded.saved.captureLens
+            isRestoring = false
+            restore(loaded.saved.state)
+            if let backdrop = loaded.saved.backdrop, backdrop.source != .builtInSky, let image = loaded.backdropImage {
+                restoredBackdrop = BackdropImage(name: backdrop.name, source: backdrop.source, image: image)
+                backdropFileID = backdrop.fileID
+            }
+        }
+
+        if let restoredBackdrop {
+            await apply(restoredBackdrop, isRestoredFromDisk: true)
+        } else if background?.source != .builtInSky {
+            await useBuiltInSky()
+        }
+        hasUnsavedChanges = false
+        refreshProjects()
+    }
+
+    private func resetToEmptyProject() {
+        restore(.empty)
+        photos.reset()
+        undoStack.removeAll()
+        redoStack.removeAll()
+        selectedLibraryPhotoID = nil
+        objectNote = nil
+        baseNote = nil
+        backdropFileID = nil
+        isRestoring = true
+        captureLens = .standard
+        isRestoring = false
     }
 
     // MARK: Table placement
@@ -75,6 +167,8 @@ class AppModel {
 
     func workspaceDidClose() {
         cancelCapture()
+        saveNow()
+        refreshProjects()
         searchTimeout?.cancel()
         searchTimeout = nil
         anchoredTable = nil
@@ -217,6 +311,19 @@ class AppModel {
     private(set) var objectError: String?
 
     var hasObjects: Bool { !objects.isEmpty }
+
+    /// Where an object appears in the animation, for the Objects list.
+    func keyframeMembership(of id: ObjectID) -> String {
+        let keyframes = animator.timeline.keyframes
+        guard !keyframes.isEmpty else { return "" }
+        let numbers = keyframes.enumerated().compactMap { index, keyframe in
+            keyframe.poses[id] != nil ? index + 1 : nil
+        }
+        if numbers.isEmpty { return "No keyframes" }
+        if numbers.count == keyframes.count && keyframes.count > 1 { return "All keyframes" }
+        if numbers.count == 1 { return "Keyframe \(numbers[0])" }
+        return "Keyframes " + numbers.map(String.init).joined(separator: ", ")
+    }
     var selectedObject: ObjectSummary? { objects.first { $0.id == selectedObjectID } }
 
     var canGenerateObject: Bool {
@@ -296,16 +403,8 @@ class AppModel {
 
     /// Identifies the stored copy of an imported backdrop; nil for the built-in sky.
     @ObservationIgnored private var backdropFileID: UUID?
-    /// A backdrop read from the saved project, shown once the window appears.
-    @ObservationIgnored private var savedBackdrop: BackdropImage?
-
     func loadDefaultBackgroundIfNeeded() async {
         guard background == nil, !isLoadingBackground else { return }
-        if let savedBackdrop {
-            self.savedBackdrop = nil
-            await apply(savedBackdrop, isRestoredFromDisk: true)
-            return
-        }
         await useBuiltInSky()
     }
 
@@ -496,7 +595,7 @@ class AppModel {
             } else {
                 captureStatus = .libraryOnly
             }
-            slideshowURL = nil
+            exportedFile = nil
             documentChanged()
         } catch {
             captureStatus = .failed(error.localizedDescription)
@@ -522,7 +621,7 @@ class AppModel {
         if selectedLibraryPhotoID == photo.id { selectedLibraryPhotoID = nil }
         if focusedKeyframePhotoID == photo.id { focusedKeyframePhotoID = nil }
         captureStatus = nil
-        slideshowURL = nil
+        exportedFile = nil
         documentChanged()
     }
 
@@ -546,7 +645,7 @@ class AppModel {
         keyframeNotice = nil
         animator.addKeyframe()
         focusedKeyframePhotoID = nil
-        slideshowURL = nil
+        exportedFile = nil
         documentChanged()
     }
 
@@ -589,7 +688,7 @@ class AppModel {
             keyframeNotice = "Keyframe \(number) changed, so its \(count == 1 ? "photo was" : "\(count) photos were") moved to the library."
         }
         if focusedKeyframePhotoID.flatMap({ photos.photo($0) })?.keyframeID == nil { focusedKeyframePhotoID = nil }
-        slideshowURL = nil
+        exportedFile = nil
     }
 
     func deleteSelectedKeyframe() {
@@ -598,7 +697,7 @@ class AppModel {
             photos.detachPhotos(from: deleted)
             focusedKeyframePhotoID = nil
             keyframeNotice = nil
-            slideshowURL = nil
+            exportedFile = nil
             documentChanged()
         }
     }
@@ -621,7 +720,7 @@ class AppModel {
     func setPrimaryPhoto(_ photo: CapturedPhoto) {
         checkpoint()
         photos.setPrimary(photo)
-        slideshowURL = nil
+        exportedFile = nil
         documentChanged()
     }
 
@@ -635,9 +734,14 @@ class AppModel {
 
     // MARK: Slideshow export
 
-    private(set) var isExportingSlideshow = false
-    private(set) var slideshowURL: URL?
-    private(set) var slideshowError: String?
+    struct ExportedFile {
+        let url: URL
+        let shareTitle: String
+    }
+
+    private(set) var isExporting = false
+    private(set) var exportedFile: ExportedFile?
+    private(set) var exportError: String?
 
     /// How many keyframes have a primary photo, out of all keyframes.
     var slideshowCoverage: (withPhoto: Int, total: Int) {
@@ -648,26 +752,65 @@ class AppModel {
     /// Exports an MP4 of each keyframe's primary photo, in timeline order. Keyframes
     /// without a photo are skipped; other photos taken at a keyframe aren't included.
     func exportSlideshow() async {
-        guard !isExportingSlideshow else { return }
+        guard !isExporting else { return }
         let slides = animator.timeline.keyframes
             .compactMap { photos.primaryPhoto(for: $0.id) }
             .compactMap { photos.image(for: $0)?.cgImage }
         guard !slides.isEmpty else { return }
 
-        isExportingSlideshow = true
-        slideshowError = nil
-        slideshowURL = nil
-        defer { isExportingSlideshow = false }
+        isExporting = true
+        exportError = nil
+        exportedFile = nil
+        defer { isExporting = false }
 
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Storyboard Slideshow.mp4")
+        let url = exportURL(suffix: "Slideshow", fileExtension: "mp4")
         do {
             try await Task.detached(priority: .userInitiated) {
                 try await SlideshowExporter.export(slides, to: url)
             }.value
-            slideshowURL = url
+            exportedFile = ExportedFile(url: url, shareTitle: "Share Slideshow")
         } catch {
-            slideshowError = error.localizedDescription
+            exportError = error.localizedDescription
         }
+    }
+
+    /// Exports a printable PDF: one numbered panel per keyframe with its primary photo
+    /// (or an empty frame) and its notes.
+    func exportStoryboardSheet() {
+        guard !isExporting, !animator.timeline.keyframes.isEmpty else { return }
+        flushAutoSave()
+        exportError = nil
+        exportedFile = nil
+
+        let panels = animator.timeline.keyframes.enumerated().map { index, keyframe in
+            StoryboardSheetExporter.Panel(
+                number: index + 1,
+                image: photos.primaryPhoto(for: keyframe.id).flatMap { photos.image(for: $0) },
+                note: keyframe.note
+            )
+        }
+        let url = exportURL(suffix: "Storyboard", fileExtension: "pdf")
+        do {
+            try StoryboardSheetExporter.export(title: projectName, panels: panels, to: url)
+            exportedFile = ExportedFile(url: url, shareTitle: "Share Storyboard Sheet")
+        } catch {
+            exportError = "The storyboard sheet couldn't be created."
+        }
+    }
+
+    /// A temporary file named after the project, such as "Storyboard 2 Slideshow.mp4".
+    private func exportURL(suffix: String, fileExtension: String) -> URL {
+        let safeName = projectName.replacingOccurrences(of: "/", with: "-")
+        return FileManager.default.temporaryDirectory.appendingPathComponent("\(safeName) \(suffix).\(fileExtension)")
+    }
+
+    // MARK: Notes
+
+    /// Shot notes for a keyframe. Saved, but typing isn't an undo step.
+    func setNote(_ note: String, forKeyframe id: Keyframe.ID) {
+        animator.setNote(note, for: id)
+        exportedFile = nil
+        documentChanged()
     }
 
     // MARK: Undo
@@ -783,7 +926,7 @@ class AppModel {
 
         focusedKeyframePhotoID = nil
         keyframeNotice = nil
-        slideshowURL = nil
+        exportedFile = nil
         captureStatus = nil
         if photos.photo(selectedLibraryPhotoID) == nil { selectedLibraryPhotoID = nil }
     }
@@ -792,9 +935,12 @@ class AppModel {
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
+    @ObservationIgnored private var hasUnsavedChanges = false
+
     /// Call after any change worth keeping. Saves shortly after edits stop.
     private func documentChanged() {
         guard !isRestoring else { return }
+        hasUnsavedChanges = true
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
@@ -808,29 +954,23 @@ class AppModel {
         saveTask?.cancel()
         saveTask = nil
         flushAutoSave()
+        guard hasUnsavedChanges, var info = currentProject else { return }
+        info.modified = .now
+        // The list shows the first keyframe's primary photo, else the newest photo.
+        info.coverPhotoID = animator.timeline.keyframes.lazy.compactMap { self.photos.primaryPhoto(for: $0.id)?.id }.first
+            ?? photos.photos.last?.id
         let backdrop = background.map {
             ProjectStore.SavedProject.Backdrop(name: $0.name, source: $0.source, fileID: backdropFileID)
         }
         let project = ProjectStore.SavedProject(state: currentState(), captureLens: captureLens, backdrop: backdrop)
         do {
-            try ProjectStore.save(project, photos: photos.photos,
+            try ProjectStore.save(info, project: project, photos: photos.photos,
                                   backdropImage: backdropFileID == nil ? nil : background?.image)
+            currentProject = info
+            hasUnsavedChanges = false
         } catch {
             print("Storyboard 3D couldn't save the project: \(error)")
         }
     }
 
-    private func loadSavedProject() {
-        guard let loaded = ProjectStore.load() else { return }
-        isRestoring = true
-        photos.load(loaded.photos, primaries: loaded.saved.state.primaryPhotoIDs)
-        captureLens = loaded.saved.captureLens
-        isRestoring = false
-        restore(loaded.saved.state)
-
-        if let backdrop = loaded.saved.backdrop, backdrop.source != .builtInSky, let image = loaded.backdropImage {
-            savedBackdrop = BackdropImage(name: backdrop.name, source: backdrop.source, image: image)
-            backdropFileID = backdrop.fileID
-        }
-    }
 }

@@ -33,6 +33,8 @@ struct ProjectState: Codable, Equatable {
         var id: Keyframe.ID
         var time: TimeInterval
         var poses: [ObjectID: CodableTransform]
+        /// Optional so projects saved before notes existed still load.
+        var note: String?
     }
 
     struct Photo: Codable, Equatable {
@@ -48,6 +50,13 @@ struct ProjectState: Codable, Equatable {
     var selectedKeyframeID: Keyframe.ID?
     var photos: [Photo]
     var primaryPhotoIDs: [Keyframe.ID: CapturedPhoto.ID]
+
+    /// A new project: the Grass base at the default size, and nothing else.
+    static let empty = ProjectState(
+        base: Base(name: BaseTemplate.grass.name, recipe: .baseTemplate(BaseTemplate.grass.rawValue),
+                   generatedBy: nil, diameterCentimeters: BaseSizeLimits.defaultWidth),
+        objects: [], keyframes: [], selectedKeyframeID: nil, photos: [], primaryPhotoIDs: [:]
+    )
 }
 
 /// `Transform` in a form that can be saved.
@@ -70,12 +79,13 @@ struct CodableTransform: Codable, Equatable {
 
 extension Keyframe {
     init(_ state: ProjectState.KeyframeState) {
-        self.init(id: state.id, time: state.time, poses: state.poses.mapValues(\.transform))
+        self.init(id: state.id, time: state.time, poses: state.poses.mapValues(\.transform), note: state.note ?? "")
     }
 }
 
 extension ProjectState.KeyframeState {
     init(_ keyframe: Keyframe) {
-        self.init(id: keyframe.id, time: keyframe.time, poses: keyframe.poses.mapValues { CodableTransform($0) })
+        self.init(id: keyframe.id, time: keyframe.time, poses: keyframe.poses.mapValues { CodableTransform($0) },
+                  note: keyframe.note.isEmpty ? nil : keyframe.note)
     }
 }

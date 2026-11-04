@@ -60,6 +60,10 @@ final class KeyframeAnimator {
         return keyframe.id
     }
 
+    func setNote(_ note: String, for id: Keyframe.ID) {
+        timeline.setNote(note, for: id)
+    }
+
     /// A deleted object leaves every keyframe.
     /// - Returns: The keyframes that contained it.
     func removeObject(_ objectID: ObjectID) -> [Keyframe.ID] {

@@ -13,6 +13,8 @@ struct Keyframe: Identifiable {
     var time: TimeInterval
     /// Each object's position, rotation, and scale relative to the base.
     var poses: [ObjectID: Transform]
+    /// Free-form shot notes, printed on the storyboard sheet.
+    var note = ""
 }
 
 /// An ordered list of evenly spaced keyframes, with eased interpolation between them.
@@ -42,6 +44,11 @@ struct KeyframeTimeline {
     mutating func update(_ id: Keyframe.ID, with poses: [ObjectID: Transform]) {
         guard let index = keyframes.firstIndex(where: { $0.id == id }) else { return }
         keyframes[index].poses = poses
+    }
+
+    mutating func setNote(_ note: String, for id: Keyframe.ID) {
+        guard let index = keyframes.firstIndex(where: { $0.id == id }) else { return }
+        keyframes[index].note = note
     }
 
     mutating func remove(_ id: Keyframe.ID) {

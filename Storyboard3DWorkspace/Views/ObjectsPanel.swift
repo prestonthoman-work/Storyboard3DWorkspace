@@ -69,7 +69,7 @@ struct ObjectsPanel: View {
                         HStack {
                             Text(object.name)
                             Spacer()
-                            Text(object.source.label)
+                            Text(appModel.keyframeMembership(of: object.id))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

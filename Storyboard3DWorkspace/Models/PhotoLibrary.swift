@@ -66,6 +66,15 @@ final class PhotoLibrary {
         return photo
     }
 
+    /// Empties the library when switching projects.
+    func reset() {
+        photos = []
+        primaryPhotoIDs = [:]
+        archive = [:]
+        decodedImages = [:]
+        decodeOrder = []
+    }
+
     /// Adds photos read from disk.
     func load(_ loaded: [CapturedPhoto], primaries: [Keyframe.ID: CapturedPhoto.ID]) {
         for photo in loaded { archive[photo.id] = photo }
