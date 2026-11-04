@@ -30,7 +30,7 @@ struct AnimatePanel: View {
             .scrollIndicators(.hidden)
 
             editActions
-            SlideshowExport()
+            SlideshowExportStatus()
         }
     }
 
@@ -71,8 +71,9 @@ struct AnimatePanel: View {
                 Label("Add Keyframe", systemImage: "plus")
             }
             .buttonStyle(.borderedProminent)
-
             .help("Copy the current scene into a new keyframe and select it")
+
+            ExportButton()
 
             if animator.selectedKeyframe != nil {
                 Button("Delete Keyframe", systemImage: "trash", role: .destructive) {
@@ -244,39 +245,45 @@ private struct StoryboardCard: View {
 }
 
 /// Exports the primary photo of each keyframe as a video slideshow.
-private struct SlideshowExport: View {
+private struct ExportButton: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        Button {
+            Task { await appModel.exportSlideshow() }
+        } label: {
+            if appModel.isExportingSlideshow {
+                ProgressView()
+            } else {
+                Label("Export", systemImage: "film.stack")
+            }
+        }
+        .disabled(appModel.slideshowCoverage.withPhoto == 0 || appModel.isExportingSlideshow)
+        .help("Export a slideshow of each keyframe's primary photo")
+    }
+}
+
+/// After exporting: a way to share the slideshow, and which keyframes it covers.
+private struct SlideshowExportStatus: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
         let coverage = appModel.slideshowCoverage
 
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 12) {
-                Button {
-                    Task { await appModel.exportSlideshow() }
-                } label: {
-                    if appModel.isExportingSlideshow {
-                        ProgressView()
-                    } else {
-                        Label("Export Slideshow", systemImage: "film.stack")
-                    }
+            if let url = appModel.slideshowURL {
+                ShareLink(item: url) {
+                    Label("Share Slideshow", systemImage: "square.and.arrow.up")
                 }
-                .disabled(coverage.withPhoto == 0 || appModel.isExportingSlideshow)
-
-                if let url = appModel.slideshowURL {
-                    ShareLink(item: url) {
-                        Label("Share Slideshow", systemImage: "square.and.arrow.up")
-                    }
-                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.bordered)
 
             if let error = appModel.slideshowError {
                 Text(error).font(.footnote).foregroundStyle(.red)
             } else if coverage.total > 0 {
                 Text(coverage.withPhoto == coverage.total
-                     ? "Uses the primary photo of each keyframe."
-                     : "\(coverage.withPhoto) of \(coverage.total) keyframes have a photo. Keyframes without one are skipped.")
+                     ? "Export makes a slideshow of each keyframe's primary photo."
+                     : "Export makes a slideshow of each keyframe's primary photo. \(coverage.withPhoto) of \(coverage.total) keyframes have one; the rest are skipped.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
