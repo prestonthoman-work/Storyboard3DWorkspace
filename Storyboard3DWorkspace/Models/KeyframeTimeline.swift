@@ -17,8 +17,9 @@ struct Keyframe: Identifiable {
 
 /// An ordered list of evenly spaced keyframes, with eased interpolation between them.
 ///
-/// Objects added after some keyframes were recorded simply hold their pose until the
-/// first keyframe that includes them; deleted objects are ignored.
+/// A keyframe may be empty. An object is shown only from keyframes that include it: it
+/// appears at the first such keyframe and is hidden at keyframes without it. Objects that
+/// aren't in any keyframe aren't animated and stay visible.
 struct KeyframeTimeline {
     static let spacing: TimeInterval = 1
 
@@ -68,15 +69,34 @@ struct KeyframeTimeline {
         return true
     }
 
-    /// Every object's interpolated pose at `time`.
+    /// Every object that appears in at least one keyframe.
+    var keyframedObjectIDs: Set<Entity.ID> {
+        Set(keyframes.flatMap { $0.poses.keys })
+    }
+
+    /// The interpolated pose at `time` of every object visible then. Keyframed objects
+    /// missing from the result are hidden at that time.
     func poses(at time: TimeInterval) -> [Entity.ID: Transform] {
-        let objectIDs = Set(keyframes.flatMap { $0.poses.keys })
+        // The keyframe in effect: the last one at or before `time`, else the first.
+        guard let governing = keyframes.last(where: { $0.time <= time + 1e-6 }) ?? keyframes.first else { return [:] }
+
         var result: [Entity.ID: Transform] = [:]
-        for objectID in objectIDs {
+        for objectID in governing.poses.keys {
             let track = keyframes.compactMap { keyframe in keyframe.poses[objectID].map { (keyframe.time, $0) } }
             if let pose = Self.interpolate(track, at: time) { result[objectID] = pose }
         }
         return result
+    }
+
+    /// Removes a deleted object from every keyframe.
+    /// - Returns: The keyframes that contained it.
+    mutating func removeObject(_ objectID: Entity.ID) -> [Keyframe.ID] {
+        var changed: [Keyframe.ID] = []
+        for index in keyframes.indices where keyframes[index].poses[objectID] != nil {
+            keyframes[index].poses[objectID] = nil
+            changed.append(keyframes[index].id)
+        }
+        return changed
     }
 
     private static func interpolate(_ track: [(time: TimeInterval, pose: Transform)], at time: TimeInterval) -> Transform? {

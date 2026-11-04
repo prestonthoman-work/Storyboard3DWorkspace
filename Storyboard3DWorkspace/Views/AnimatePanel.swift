@@ -17,7 +17,7 @@ struct AnimatePanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if animator.timeline.keyframes.isEmpty {
-                        Text("Arrange the objects, then add a keyframe. Rearrange them and add another, and playback moves everything smoothly between keyframes. Each keyframe can hold photos for your storyboard.")
+                        Text("Add a keyframe to start, even with nothing on the base. Changes you make save to the selected keyframe automatically, so add a new keyframe whenever you want a new pose. Playback moves everything smoothly between keyframes, and each keyframe can hold photos for your storyboard.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     } else {
@@ -72,13 +72,10 @@ struct AnimatePanel: View {
             }
             .buttonStyle(.borderedProminent)
 
-            if animator.selectedKeyframe != nil {
-                Button("Update", systemImage: "arrow.triangle.2.circlepath") {
-                    appModel.updateSelectedKeyframe()
-                }
-                .help("Save the current arrangement into this keyframe. Its photos are removed if the pose changes.")
+            .help("Copy the current scene into a new keyframe and select it")
 
-                Button("Delete", systemImage: "trash", role: .destructive) {
+            if animator.selectedKeyframe != nil {
+                Button("Delete Keyframe", systemImage: "trash", role: .destructive) {
                     appModel.deleteSelectedKeyframe()
                 }
                 .labelStyle(.iconOnly)
@@ -149,9 +146,18 @@ private struct SelectedKeyframeShot: View {
                     appModel.takePhotoForSelectedKeyframe()
                 }
                 CaptureStatusLine()
+
+                if let notice = appModel.keyframeNotice {
+                    Label(notice, systemImage: "photo.on.rectangle")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Label("Changes to the scene save to keyframe \(number) automatically.", systemImage: "checkmark.circle")
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
             }
         } else {
-            Text("Select a keyframe below to see and take its photos.")
+            Text("No keyframe is selected, so changes aren't being saved to one. Select a keyframe below, or add a new one.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }

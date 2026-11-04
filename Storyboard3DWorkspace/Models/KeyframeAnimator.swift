@@ -31,16 +31,6 @@ final class KeyframeAnimator {
         timeline.keyframes.firstIndex { $0.id == id }.map { $0 + 1 }
     }
 
-    /// The keyframe the scene is posed at right now, if any. Every object must match
-    /// the keyframe's saved pose, and no object may be missing or extra. A photo taken
-    /// now truly shows this keyframe only when this returns it.
-    func keyframeMatchingScene() -> Keyframe? {
-        guard !isPlaying,
-              let candidate = selectedKeyframe ?? timeline.keyframe(near: playhead)
-        else { return nil }
-        return KeyframeTimeline.posesMatch(candidate.poses, scene.currentPoses()) ? candidate : nil
-    }
-
     // MARK: Editing
 
     func addKeyframe() {
@@ -50,15 +40,21 @@ final class KeyframeAnimator {
         playhead = keyframe.time
     }
 
-    /// Saves the current arrangement into the selected keyframe.
+    /// Auto-save: writes the current arrangement into the selected keyframe.
     /// - Returns: The keyframe's ID if its poses actually changed.
     @discardableResult
-    func updateSelectedKeyframe() -> Keyframe.ID? {
-        guard let keyframe = selectedKeyframe else { return nil }
+    func saveSceneToSelectedKeyframe() -> Keyframe.ID? {
+        guard !isPlaying, let keyframe = selectedKeyframe else { return nil }
         let poses = scene.currentPoses()
         guard !KeyframeTimeline.posesMatch(keyframe.poses, poses) else { return nil }
         timeline.update(keyframe.id, with: poses)
         return keyframe.id
+    }
+
+    /// A deleted object leaves every keyframe.
+    /// - Returns: The keyframes that contained it.
+    func removeObject(_ objectID: Entity.ID) -> [Keyframe.ID] {
+        timeline.removeObject(objectID)
     }
 
     /// - Returns: The deleted keyframe's ID.
@@ -128,7 +124,7 @@ final class KeyframeAnimator {
     }
 
     private func applyPlayhead() {
-        scene.apply(timeline.poses(at: playhead))
+        scene.apply(timeline.poses(at: playhead), keyframedObjects: timeline.keyframedObjectIDs)
     }
 }
 

@@ -55,11 +55,6 @@ struct CaptureStatusLine: View {
             Label("Saved to the library. It isn't attached to a keyframe.", systemImage: "photo.on.rectangle")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-        case .sceneChanged(let number):
-            Label("Objects have moved since keyframe \(number) was selected. Select it again to restore its pose, or choose Update to save the new one.",
-                  systemImage: "exclamationmark.triangle.fill")
-                .font(.callout)
-                .foregroundStyle(.orange)
         case .saved:
             Label("Saved to Photos", systemImage: "checkmark.circle.fill")
                 .font(.callout)

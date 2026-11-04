@@ -23,32 +23,11 @@ struct WorkspacePanel: View {
                 PanelPage(title: "Background") { BackgroundPanel() }
             }
             Tab("Animate", systemImage: "film", value: WorkspaceTab.animate) {
-                PanelPage(title: "Animate") { RequiresObjects { AnimatePanel() } }
+                PanelPage(title: "Animate") { AnimatePanel() }
             }
             Tab("Capture", systemImage: "camera", value: WorkspaceTab.capture) {
                 PanelPage(title: "Capture") { CapturePanel() }
             }
-        }
-    }
-}
-
-/// Shows a short prompt to add objects first when there aren't any yet.
-private struct RequiresObjects<Content: View>: View {
-    @Environment(AppModel.self) private var appModel
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        if appModel.hasObjects {
-            content
-        } else {
-            ContentUnavailableView {
-                Label("No Objects Yet", systemImage: "cube")
-            } description: {
-                Text("Add objects to the base to animate them.")
-            } actions: {
-                Button("Go to Objects") { appModel.selectedTab = .objects }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

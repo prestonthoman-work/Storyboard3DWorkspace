@@ -166,6 +166,7 @@ final class WorkspaceScene {
         copy.transform = object.transform
         // Offset sideways relative to the base, so the copy is visible next to the original.
         copy.position += SIMD3<Float>(0.05, 0, 0.03)
+        copy.isEnabled = true
         objectsContainer.addChild(copy)
         configureInteraction(for: copy)
         objects.append(copy)
@@ -212,14 +213,29 @@ final class WorkspaceScene {
         }
     }
 
-    /// Current poses of every placed object, relative to the base.
+    /// Current poses of every visible placed object, relative to the base.
     func currentPoses() -> [Entity.ID: Transform] {
-        Dictionary(uniqueKeysWithValues: objects.map { ($0.id, $0.transform) })
+        Dictionary(uniqueKeysWithValues: objects.filter(\.isEnabled).map { ($0.id, $0.transform) })
     }
 
-    func apply(_ poses: [Entity.ID: Transform]) {
+    /// Poses objects for a moment in the animation. Keyframed objects without a pose are
+    /// hidden; objects that aren't in any keyframe are left alone.
+    func apply(_ poses: [Entity.ID: Transform], keyframedObjects: Set<Entity.ID>) {
         for object in objects {
-            if let pose = poses[object.id] { object.transform = pose }
+            if let pose = poses[object.id] {
+                object.transform = pose
+                object.isEnabled = true
+            } else if keyframedObjects.contains(object.id) {
+                object.isEnabled = false
+            }
+        }
+    }
+
+    /// True when nothing is being held or is still falling, so poses are final.
+    var isSettled: Bool {
+        objects.filter(\.isEnabled).allSatisfy { object in
+            guard let gravity = object.components[ObjectGravityComponent.self] else { return true }
+            return !gravity.isHeld && gravity.fallSpeed == 0
         }
     }
 

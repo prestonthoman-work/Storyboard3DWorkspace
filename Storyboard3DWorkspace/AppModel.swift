@@ -219,6 +219,7 @@ class AppModel {
             selectObject(object.id)
             objectNote = model.note
             objectPrompt = ""
+            sceneEdited()
         } catch {
             objectError = error.localizedDescription
         }
@@ -230,6 +231,7 @@ class AppModel {
         let copy = workspace.duplicate(object)
         objects.append(ObjectSummary(id: copy.id, name: summary.name, source: summary.source))
         selectObject(copy.id)
+        sceneEdited()
     }
 
     func deleteSelectedObject() {
@@ -238,6 +240,9 @@ class AppModel {
         workspace.remove(object)
         objects.removeAll { $0.id == id }
         selectObject(nil)
+        // The object leaves every keyframe it was in, so those keyframes have changed.
+        let changed = animator.removeObject(id)
+        changed.forEach(detachPhotos(from:))
     }
 
     func selectObject(_ id: Entity.ID?) {
@@ -331,8 +336,6 @@ class AppModel {
     enum CaptureStatus: Equatable {
         case attached(keyframeNumber: Int)
         case libraryOnly
-        /// Objects were moved after the keyframe was selected, so a photo wouldn't show it.
-        case sceneChanged(keyframeNumber: Int)
         case saved
         case failed(String)
     }
@@ -369,9 +372,11 @@ class AppModel {
         photos.photo(selectedLibraryPhotoID) ?? photos.photos.last
     }
 
-    /// The keyframe a photo taken right now would attach to, and its number.
+    /// The keyframe a photo taken right now would attach to, and its number: the selected
+    /// keyframe, since edits auto-save into it. Nothing while playing or between keyframes.
     var captureTarget: (keyframe: Keyframe, number: Int)? {
-        guard let keyframe = animator.keyframeMatchingScene(),
+        guard !animator.isPlaying,
+              let keyframe = animator.selectedKeyframe,
               let number = animator.number(of: keyframe.id)
         else { return nil }
         return (keyframe, number)
@@ -400,15 +405,8 @@ class AppModel {
     }
 
     /// From the Animate tab: take a photo of the selected keyframe, staying on that tab.
-    /// Refuses up front if objects have moved since the keyframe was selected.
     func takePhotoForSelectedKeyframe() {
-        guard let keyframe = animator.selectedKeyframe,
-              let number = animator.number(of: keyframe.id)
-        else { return }
-        guard captureTarget?.keyframe.id == keyframe.id else {
-            captureStatus = .sceneChanged(keyframeNumber: number)
-            return
-        }
+        guard animator.selectedKeyframe != nil else { return }
         startCapture()
     }
 
@@ -417,8 +415,10 @@ class AppModel {
         isCapturing = true
         defer { isCapturing = false }
 
-        // Decide the keyframe at the moment the shutter fires, before anything can move.
+        // Decide the keyframe at the moment the shutter fires, and make sure it holds
+        // exactly what's being photographed.
         let target = captureTarget
+        if target != nil { autoSaveSelectedKeyframe() }
 
         let tracking = SpatialTrackingService.shared
         let camera: CaptureCamera
@@ -490,36 +490,81 @@ class AppModel {
     }
 
     func addKeyframe() {
+        // Finish saving edits into the current keyframe before starting a new one.
+        autoSaveTask?.cancel()
+        autoSaveSelectedKeyframe()
+        keyframeNotice = nil
         animator.addKeyframe()
         focusedKeyframePhotoID = nil
         slideshowURL = nil
     }
 
-    /// Saving a new pose into a keyframe means its photos no longer show it, so they're
-    /// detached (they stay in the library).
-    func updateSelectedKeyframe() {
-        if let changed = animator.updateSelectedKeyframe() {
-            photos.detachPhotos(from: changed)
-            focusedKeyframePhotoID = nil
-            slideshowURL = nil
+    /// A short message after a keyframe's photos were detached by a change.
+    private(set) var keyframeNotice: String?
+    @ObservationIgnored private var autoSaveTask: Task<Void, Never>?
+
+    /// Call after any edit to the scene. Once held or falling objects settle, the
+    /// arrangement is saved into the selected keyframe.
+    func sceneEdited() {
+        autoSaveTask?.cancel()
+        autoSaveTask = Task { [weak self] in
+            // Let gravity finish so the saved pose is where things come to rest (at most ~2 s).
+            var settledChecks = 0
+            for _ in 0..<20 {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard let self, !Task.isCancelled else { return }
+                settledChecks = self.workspace.isSettled ? settledChecks + 1 : 0
+                if settledChecks >= 2 { break }
+            }
+            guard !Task.isCancelled else { return }
+            self?.autoSaveSelectedKeyframe()
+            self?.autoSaveTask = nil
         }
     }
 
+    /// Saves the scene into the selected keyframe. If its pose changed, its photos no
+    /// longer show it, so they're detached (they stay in the library).
+    private func autoSaveSelectedKeyframe() {
+        if let changed = animator.saveSceneToSelectedKeyframe() {
+            detachPhotos(from: changed)
+        }
+    }
+
+    private func detachPhotos(from keyframe: Keyframe.ID) {
+        let count = photos.photos(for: keyframe).count
+        photos.detachPhotos(from: keyframe)
+        if count > 0, let number = animator.number(of: keyframe) {
+            keyframeNotice = "Keyframe \(number) changed, so its \(count == 1 ? "photo was" : "\(count) photos were") moved to the library."
+        }
+        if focusedKeyframePhotoID.flatMap({ photos.photo($0) })?.keyframeID == nil { focusedKeyframePhotoID = nil }
+        slideshowURL = nil
+    }
+
     func deleteSelectedKeyframe() {
+        autoSaveTask?.cancel()
         if let deleted = animator.deleteSelectedKeyframe() {
             photos.detachPhotos(from: deleted)
             focusedKeyframePhotoID = nil
+            keyframeNotice = nil
             slideshowURL = nil
         }
     }
 
     func selectKeyframe(_ keyframe: Keyframe) {
+        autoSaveTask?.cancel()
+        autoSaveSelectedKeyframe()
+        keyframeNotice = nil
         animator.select(keyframe)
         focusedKeyframePhotoID = nil
         captureStatus = nil
     }
 
     func scrubTimeline(to time: TimeInterval) {
+        if autoSaveTask != nil {
+            autoSaveTask?.cancel()
+            autoSaveTask = nil
+            autoSaveSelectedKeyframe()
+        }
         animator.scrub(to: time)
         focusedKeyframePhotoID = nil
     }
