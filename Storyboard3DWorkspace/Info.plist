@@ -4,6 +4,8 @@
 <dict>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Storyboard 3D saves your captured compositions to Photos.</string>
+	<key>NSWorldSensingUsageDescription</key>
+	<string>Storyboard 3D finds tables around you so it can place the base on one.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationPreferredDefaultSceneSessionRole</key>

@@ -7,14 +7,18 @@ import Foundation
 import RealityKit
 import simd
 
-struct Keyframe: Identifiable, Equatable {
+/// A snapshot of every placed object's pose at one moment.
+struct Keyframe: Identifiable {
     let id = UUID()
     var time: TimeInterval
-    /// The model's position, rotation, and scale at this keyframe.
-    var transform: Transform
+    /// Each object's position, rotation, and scale relative to the base.
+    var poses: [Entity.ID: Transform]
 }
 
 /// An ordered list of evenly spaced keyframes, with eased interpolation between them.
+///
+/// Objects added after some keyframes were recorded simply hold their pose until the
+/// first keyframe that includes them; deleted objects are ignored.
 struct KeyframeTimeline {
     static let spacing: TimeInterval = 1
 
@@ -24,15 +28,15 @@ struct KeyframeTimeline {
     var canPlay: Bool { keyframes.count >= 2 }
 
     @discardableResult
-    mutating func append(_ transform: Transform) -> Keyframe {
-        let keyframe = Keyframe(time: keyframes.isEmpty ? 0 : duration + Self.spacing, transform: transform)
+    mutating func append(_ poses: [Entity.ID: Transform]) -> Keyframe {
+        let keyframe = Keyframe(time: keyframes.isEmpty ? 0 : duration + Self.spacing, poses: poses)
         keyframes.append(keyframe)
         return keyframe
     }
 
-    mutating func update(_ id: Keyframe.ID, with transform: Transform) {
+    mutating func update(_ id: Keyframe.ID, with poses: [Entity.ID: Transform]) {
         guard let index = keyframes.firstIndex(where: { $0.id == id }) else { return }
-        keyframes[index].transform = transform
+        keyframes[index].poses = poses
     }
 
     mutating func remove(_ id: Keyframe.ID) {
@@ -51,23 +55,32 @@ struct KeyframeTimeline {
         keyframes.first { abs($0.time - time) <= tolerance }
     }
 
-    func transform(at time: TimeInterval) -> Transform? {
-        guard let first = keyframes.first, let last = keyframes.last else { return nil }
-        if time <= first.time { return first.transform }
-        if time >= last.time { return last.transform }
-
-        guard let nextIndex = keyframes.firstIndex(where: { $0.time > time }), nextIndex > 0 else {
-            return last.transform
+    /// Every object's interpolated pose at `time`.
+    func poses(at time: TimeInterval) -> [Entity.ID: Transform] {
+        let objectIDs = Set(keyframes.flatMap { $0.poses.keys })
+        var result: [Entity.ID: Transform] = [:]
+        for objectID in objectIDs {
+            let track = keyframes.compactMap { keyframe in keyframe.poses[objectID].map { (keyframe.time, $0) } }
+            if let pose = Self.interpolate(track, at: time) { result[objectID] = pose }
         }
-        let from = keyframes[nextIndex - 1]
-        let to = keyframes[nextIndex]
+        return result
+    }
+
+    private static func interpolate(_ track: [(time: TimeInterval, pose: Transform)], at time: TimeInterval) -> Transform? {
+        guard let first = track.first, let last = track.last else { return nil }
+        if time <= first.time { return first.pose }
+        if time >= last.time { return last.pose }
+
+        guard let nextIndex = track.firstIndex(where: { $0.time > time }), nextIndex > 0 else { return last.pose }
+        let from = track[nextIndex - 1]
+        let to = track[nextIndex]
         let linear = Float((time - from.time) / (to.time - from.time))
         let eased = linear * linear * (3 - 2 * linear) // smoothstep: ease in and out of each pose
 
         return Transform(
-            scale: mix(from.transform.scale, to.transform.scale, t: eased),
-            rotation: simd_slerp(from.transform.rotation, to.transform.rotation, eased),
-            translation: mix(from.transform.translation, to.transform.translation, t: eased)
+            scale: mix(from.pose.scale, to.pose.scale, t: eased),
+            rotation: simd_slerp(from.pose.rotation, to.pose.rotation, eased),
+            translation: mix(from.pose.translation, to.pose.translation, t: eased)
         )
     }
 }

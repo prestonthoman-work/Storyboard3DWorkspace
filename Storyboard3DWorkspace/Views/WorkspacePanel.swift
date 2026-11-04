@@ -13,37 +13,40 @@ struct WorkspacePanel: View {
         @Bindable var appModel = appModel
 
         TabView(selection: $appModel.selectedTab) {
-            Tab("Model", systemImage: "cube", value: WorkspaceTab.model) {
-                PanelPage(title: "Model") { ModelPanel() }
+            Tab("Base", systemImage: "square.3.layers.3d.down.right", value: WorkspaceTab.base) {
+                PanelPage(title: "Base") { BasePanel() }
+            }
+            Tab("Objects", systemImage: "cube", value: WorkspaceTab.objects) {
+                PanelPage(title: "Objects") { ObjectsPanel() }
             }
             Tab("Background", systemImage: "photo", value: WorkspaceTab.background) {
                 PanelPage(title: "Background") { BackgroundPanel() }
             }
             Tab("Animate", systemImage: "film", value: WorkspaceTab.animate) {
-                PanelPage(title: "Animate") { RequiresModel { AnimatePanel() } }
+                PanelPage(title: "Animate") { RequiresObjects { AnimatePanel() } }
             }
             Tab("Capture", systemImage: "camera", value: WorkspaceTab.capture) {
-                PanelPage(title: "Capture") { RequiresModel { CapturePanel() } }
+                PanelPage(title: "Capture") { CapturePanel() }
             }
         }
     }
 }
 
-/// Shows a short prompt to create a model first when there isn't one yet.
-private struct RequiresModel<Content: View>: View {
+/// Shows a short prompt to add objects first when there aren't any yet.
+private struct RequiresObjects<Content: View>: View {
     @Environment(AppModel.self) private var appModel
     @ViewBuilder var content: Content
 
     var body: some View {
-        if appModel.hasModel {
+        if appModel.hasObjects {
             content
         } else {
             ContentUnavailableView {
-                Label("No Model Yet", systemImage: "cube")
+                Label("No Objects Yet", systemImage: "cube")
             } description: {
-                Text("Generate a model to animate and capture it.")
+                Text("Add objects to the base to animate them.")
             } actions: {
-                Button("Go to Model") { appModel.selectedTab = .model }
+                Button("Go to Objects") { appModel.selectedTab = .objects }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -74,5 +77,5 @@ private struct PanelPage<Content: View>: View {
 #Preview(windowStyle: .automatic) {
     WorkspacePanel()
         .environment(AppModel())
-        .frame(width: 460, height: 500)
+        .frame(width: 480, height: 560)
 }

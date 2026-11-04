@@ -13,7 +13,7 @@ struct AnimatePanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             if animator.timeline.keyframes.isEmpty {
-                Text("Pose the model, then add a keyframe. Pose it again and add another, and playback moves smoothly between them.")
+                Text("Arrange the objects, then add a keyframe. Rearrange them and add another, and playback moves everything smoothly between keyframes.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {

@@ -6,39 +6,38 @@
 import RealityKit
 import SwiftUI
 
-/// Records keyframes from an entity's transform and plays them back onto it.
+/// Records snapshots of every placed object's pose and plays them back.
 @Observable
 final class KeyframeAnimator {
     private(set) var timeline = KeyframeTimeline()
     private(set) var playhead: TimeInterval = 0
     private(set) var selectedKeyframeID: Keyframe.ID?
-    private(set) var isPlaying = false
+    private(set) var isPlaying = false {
+        // Keyframes drive object heights during playback; gravity resumes when it stops.
+        didSet { ObjectGravitySystem.isFallingPaused = isPlaying }
+    }
 
-    @ObservationIgnored private let target: Entity
+    @ObservationIgnored private let scene: WorkspaceScene
     @ObservationIgnored private var playbackTask: Task<Void, Never>?
 
-    init(target: Entity) {
-        self.target = target
+    init(scene: WorkspaceScene) {
+        self.scene = scene
     }
 
     var selectedKeyframe: Keyframe? { timeline.keyframe(selectedKeyframeID) }
-
-    func selectedIndex(of keyframe: Keyframe) -> Int? {
-        timeline.keyframes.firstIndex { $0.id == keyframe.id }
-    }
 
     // MARK: Editing
 
     func addKeyframe() {
         pause()
-        let keyframe = timeline.append(target.transform)
+        let keyframe = timeline.append(scene.currentPoses())
         selectedKeyframeID = keyframe.id
         playhead = keyframe.time
     }
 
     func updateSelectedKeyframe() {
         guard let id = selectedKeyframeID else { return }
-        timeline.update(id, with: target.transform)
+        timeline.update(id, with: scene.currentPoses())
     }
 
     func deleteSelectedKeyframe() {
@@ -105,8 +104,7 @@ final class KeyframeAnimator {
     }
 
     private func applyPlayhead() {
-        guard let transform = timeline.transform(at: playhead) else { return }
-        target.transform = transform
+        scene.apply(timeline.poses(at: playhead))
     }
 }
 

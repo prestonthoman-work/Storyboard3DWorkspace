@@ -7,16 +7,16 @@ import CoreGraphics
 import Metal
 import RealityKit
 
-/// Renders the staged composition (model plus backdrop) to a flat image, offscreen.
+/// Renders the staged composition (base, objects, and backdrop) to a flat image, offscreen.
 ///
 /// visionOS apps can't read the passthrough camera feed or screenshot their own
 /// immersive space, so capture uses a separate `RealityRenderer` scene instead: a copy
-/// of the model at its current pose, seen from the viewer's head position, against a
+/// of the base and its objects at their current poses, seen from the viewer's head position, against a
 /// backdrop plane sized to fill the frame. Passthrough and app windows can't appear
 /// in the output because they never enter that scene.
 ///
 /// The viewpoint matches where the viewer is standing. The lens is chosen to frame the
-/// model, so the result reads like a product shot rather than a wide-angle view.
+/// scene, so the result reads like a product shot rather than a wide-angle view.
 final class CompositionRenderer {
     enum RenderError: LocalizedError {
         case metalUnavailable
@@ -36,20 +36,18 @@ final class CompositionRenderer {
     /// Gap between the model and the backdrop, matching the live scene.
     private static let backdropGap: Float = 0.9
 
-    func render(model: Entity, background: CGImage, viewerPosition: SIMD3<Float>) async throws -> CGImage {
+    /// - Parameter scene: The base with its objects. Rendered at its current world pose.
+    func render(scene: Entity, background: CGImage, viewerPosition: SIMD3<Float>) async throws -> CGImage {
         guard let device = MTLCreateSystemDefaultDevice() else { throw RenderError.metalUnavailable }
 
         let renderer = try RealityRenderer()
         let aspect = Float(Self.outputWidth) / Float(Self.outputHeight)
 
-        // Copy of the model at its current world pose, minus interaction-only pieces.
-        let subject = model.clone(recursive: true)
-        subject.components.remove(ManipulationComponent.self)
-        subject.components.remove(InputTargetComponent.self)
-        subject.components.remove(HoverEffectComponent.self)
-        subject.components.remove(CollisionComponent.self)
+        // A copy of the staged scene, minus interaction-only pieces.
+        let subject = scene.clone(recursive: true)
         subject.findEntity(named: WorkspaceScene.selectionIndicatorName)?.removeFromParent()
-        subject.transform = Transform(matrix: model.transformMatrix(relativeTo: nil))
+        Self.stripInteraction(from: subject)
+        subject.transform = Transform(matrix: scene.transformMatrix(relativeTo: nil))
 
         let bounds = subject.visualBounds(relativeTo: nil)
         let center = bounds.isEmpty ? subject.position : bounds.center
@@ -120,6 +118,16 @@ final class CompositionRenderer {
         }
 
         return try Self.makeImage(from: texture)
+    }
+
+    private static func stripInteraction(from entity: Entity) {
+        entity.components.remove(ManipulationComponent.self)
+        entity.components.remove(InputTargetComponent.self)
+        entity.components.remove(HoverEffectComponent.self)
+        entity.components.remove(CollisionComponent.self)
+        for child in entity.children {
+            stripInteraction(from: child)
+        }
     }
 
     /// An unlit plane perpendicular to the camera that aspect-fills the frame.

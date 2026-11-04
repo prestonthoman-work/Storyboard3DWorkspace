@@ -42,7 +42,7 @@ struct CapturePanel: View {
 
             Spacer(minLength: 0)
 
-            Text("Captures the model and backdrop from where you're standing, framed on the model. Your room and these controls aren't included.")
+            Text("Captures the base, its objects, and the backdrop from where you're standing, framed on the scene. Your room and these controls aren't included.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

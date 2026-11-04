@@ -27,7 +27,7 @@ struct ViewerFacingBackdropSystem: System {
     init(scene: Scene) {}
 
     func update(context: SceneUpdateContext) {
-        let viewer = ViewerPoseProvider.shared.viewerPosition
+        let viewer = SpatialTrackingService.shared.viewerPosition
 
         for backdrop in context.entities(matching: Self.query, updatingSystemWhen: .rendering) {
             guard var component = backdrop.components[ViewerFacingBackdropComponent.self],

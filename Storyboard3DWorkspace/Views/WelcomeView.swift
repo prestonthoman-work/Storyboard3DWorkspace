@@ -16,7 +16,7 @@ struct WelcomeView: View {
             Text("Storyboard 3D")
                 .font(.extraLargeTitle2)
 
-            Text("Stage a 3D model in your space, set a backdrop, and frame it from any angle.")
+            Text("Build a scene on your table, set a backdrop, and frame it from any angle.")
                 .font(.title3)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

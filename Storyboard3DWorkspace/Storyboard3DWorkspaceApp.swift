@@ -16,6 +16,9 @@ struct Storyboard3DWorkspaceApp: App {
     init() {
         ViewerFacingBackdropComponent.registerComponent()
         ViewerFacingBackdropSystem.registerSystem()
+        ObjectGravityComponent.registerComponent()
+        GravitySurfaceComponent.registerComponent()
+        ObjectGravitySystem.registerSystem()
     }
 
     var body: some SwiftUI.Scene {

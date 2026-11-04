@@ -19,27 +19,34 @@ struct ImmersiveView: View {
             workspace.root.removeFromParent()
             content.add(workspace.root)
 
-            let stage = workspace.stageModel
             workspace.subscriptions = [
-                content.subscribe(to: ManipulationEvents.WillBegin.self, on: stage) { _ in
-                    appModel.modelManipulationBegan()
+                content.subscribe(to: ManipulationEvents.WillBegin.self) { event in
+                    workspace.setHeld(true, for: event.entity)
+                    appModel.manipulationBegan(on: event.entity)
                 },
-                content.subscribe(to: ManipulationEvents.DidUpdateTransform.self, on: stage) { _ in
-                    workspace.clampModelScale()
+                content.subscribe(to: ManipulationEvents.DidUpdateTransform.self) { event in
+                    workspace.clampScale(of: event.entity)
+                    workspace.keepAboveSurface(event.entity)
+                },
+                // Letting go hands the object to gravity.
+                content.subscribe(to: ManipulationEvents.WillRelease.self) { event in
+                    workspace.setHeld(false, for: event.entity)
+                },
+                content.subscribe(to: ManipulationEvents.WillEnd.self) { event in
+                    workspace.setHeld(false, for: event.entity)
                 }
             ]
         }
         .gesture(
             SpatialTapGesture()
-                .targetedToEntity(appModel.workspace.stageModel)
-                .onEnded { _ in appModel.setModelSelected(true) }
+                .targetedToAnyEntity()
+                .onEnded { value in appModel.selectObject(containing: value.entity) }
         )
         .task {
-            await ViewerPoseProvider.shared.start()
+            await appModel.workspaceDidOpen()
         }
         .onDisappear {
-            appModel.animator.pause()
-            ViewerPoseProvider.shared.stop()
+            appModel.workspaceDidClose()
             appModel.workspace.subscriptions.removeAll()
         }
     }

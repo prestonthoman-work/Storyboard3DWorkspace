@@ -7,7 +7,8 @@ import Foundation
 
 /// The workflow steps shown as tabs in the control panel.
 enum WorkspaceTab: Hashable {
-    case model
+    case base
+    case objects
     case background
     case animate
     case capture

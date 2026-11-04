@@ -19,7 +19,7 @@ struct ContentView: View {
                 WelcomeView()
             }
         }
-        .frame(width: 460, height: 500)
+        .frame(width: 480, height: 560)
         .task {
             await appModel.loadDefaultBackgroundIfNeeded()
         }
