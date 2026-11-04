@@ -21,73 +21,227 @@ class AppModel {
     }
     var immersiveSpaceState = ImmersiveSpaceState.closed
 
-    var selectedTab: WorkspaceTab = .model
+    var selectedTab: WorkspaceTab = .base
 
     /// The RealityKit entities for the staged composition.
     let workspace: WorkspaceScene
     let animator: KeyframeAnimator
+    let generationService: any ModelGenerationService = ModelGenerationServiceProvider.makeService()
+
+    var isSampleMode: Bool { generationService.source == .sample }
 
     init() {
         let workspace = WorkspaceScene()
         self.workspace = workspace
-        self.animator = KeyframeAnimator(target: workspace.stageModel)
+        self.animator = KeyframeAnimator(scene: workspace)
+        workspace.setBase(BaseTemplateBuilder.make(.grass), size: baseSize.meters)
     }
 
-    var hasModel: Bool { currentModel != nil }
+    // MARK: Table placement
 
-    // MARK: Model
+    enum TablePlacement: Equatable {
+        case searching
+        case onTable
+        case floating(reason: String)
+    }
 
-    struct ModelSummary {
+    private(set) var tablePlacement: TablePlacement = .searching
+    @ObservationIgnored private var anchoredTable: (id: UUID, anchorFromBase: simd_float4x4)?
+    @ObservationIgnored private var searchTimeout: Task<Void, Never>?
+
+    func workspaceDidOpen() async {
+        let tracking = SpatialTrackingService.shared
+        tablePlacement = .searching
+        await tracking.start()
+        tracking.onTablesChanged = { [weak self] in self?.tablesChanged() }
+
+        switch tracking.tableDetection {
+        case .running:
+            tablesChanged()
+            searchTimeout = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(8))
+                guard let self, !Task.isCancelled, self.tablePlacement == .searching else { return }
+                self.tablePlacement = .floating(reason: "No table found yet. Look at a table, then choose Find Table.")
+            }
+        case .notAuthorized:
+            workspace.placeBaseFloating()
+            tablePlacement = .floating(reason: "Allow access to your surroundings in Settings to place the base on a table.")
+        case .unavailable:
+            workspace.placeBaseFloating()
+            tablePlacement = .floating(reason: "Table detection isn't available here, so the base floats in front of you.")
+        }
+    }
+
+    func workspaceDidClose() {
+        searchTimeout?.cancel()
+        searchTimeout = nil
+        anchoredTable = nil
+        animator.pause()
+        SpatialTrackingService.shared.onTablesChanged = nil
+        SpatialTrackingService.shared.stop()
+    }
+
+    /// Moves the base onto the detected table closest to where the viewer is standing.
+    func findTable() {
+        let tracking = SpatialTrackingService.shared
+        guard tracking.tableDetection == .running else { return }
+        if let table = tracking.nearestTable(to: tracking.viewerPosition) {
+            anchor(to: table)
+        } else {
+            tablePlacement = .floating(reason: "No table found. Look around at a table and try again.")
+        }
+    }
+
+    var canFindTable: Bool {
+        SpatialTrackingService.shared.tableDetection == .running
+    }
+
+    private func tablesChanged() {
+        let tracking = SpatialTrackingService.shared
+        if let anchored = anchoredTable {
+            // Follow the table's anchor as ARKit refines it, keeping the base where it was placed on the surface.
+            if let table = tracking.tables[anchored.id] {
+                workspace.placeBase(atSurface: table.originFromAnchor * anchored.anchorFromBase)
+            }
+            return
+        }
+        if tablePlacement == .searching, let table = tracking.nearestTable(to: tracking.viewerPosition) {
+            anchor(to: table)
+        }
+    }
+
+    private func anchor(to table: SpatialTrackingService.Table) {
+        searchTimeout?.cancel()
+        workspace.placeBase(atSurface: table.originFromCenter)
+        // Remember where the base sits relative to the table's stable anchor, not its
+        // surface center, which drifts as more of the table is detected.
+        let originFromBase = workspace.baseAnchor.transformMatrix(relativeTo: nil)
+        anchoredTable = (table.id, table.originFromAnchor.inverse * originFromBase)
+        tablePlacement = .onTable
+    }
+
+    // MARK: Base
+
+    enum BaseOrigin: Equatable {
+        case template(BaseTemplate)
+        case generated(ModelSource)
+    }
+
+    struct BaseSummary {
+        let name: String
+        let origin: BaseOrigin
+    }
+
+    private(set) var base = BaseSummary(name: BaseTemplate.grass.name, origin: .template(.grass))
+    var baseSize: BaseSize = .medium {
+        didSet { workspace.setBaseSize(baseSize.meters) }
+    }
+    var basePrompt = ""
+    private(set) var isGeneratingBase = false
+    private(set) var baseNote: String?
+    private(set) var baseError: String?
+
+    var canGenerateBase: Bool {
+        !isGeneratingBase && !basePrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func applyBaseTemplate(_ template: BaseTemplate) {
+        workspace.setBase(BaseTemplateBuilder.make(template), size: baseSize.meters)
+        base = BaseSummary(name: template.name, origin: .template(template))
+        baseNote = nil
+        baseError = nil
+    }
+
+    func generateBase() async {
+        guard canGenerateBase else { return }
+        let prompt = basePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        isGeneratingBase = true
+        baseError = nil
+        defer { isGeneratingBase = false }
+
+        do {
+            let model = try await generationService.generateBase(prompt: prompt)
+            workspace.setBase(model.entity, size: baseSize.meters)
+            base = BaseSummary(name: model.displayName, origin: .generated(model.source))
+            baseNote = model.note
+        } catch {
+            baseError = error.localizedDescription
+        }
+    }
+
+    // MARK: Objects
+
+    struct ObjectSummary: Identifiable {
+        let id: Entity.ID
         let name: String
         let source: ModelSource
     }
 
-    let generationService: any ModelGenerationService = ModelGenerationServiceProvider.makeService()
-    var modelPrompt = ""
-    private(set) var isGenerating = false
-    private(set) var currentModel: ModelSummary?
-    private(set) var generationError: String?
-    private(set) var isModelSelected = false
+    private(set) var objects: [ObjectSummary] = []
+    private(set) var selectedObjectID: Entity.ID?
+    var objectPrompt = ""
+    private(set) var isGeneratingObject = false
+    private(set) var objectNote: String?
+    private(set) var objectError: String?
 
-    var isSampleMode: Bool { generationService.source == .sample }
+    var hasObjects: Bool { !objects.isEmpty }
+    var selectedObject: ObjectSummary? { objects.first { $0.id == selectedObjectID } }
 
-    var canGenerate: Bool {
-        !isGenerating && !modelPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    var canGenerateObject: Bool {
+        !isGeneratingObject && !objectPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    func generateModel() async {
-        guard canGenerate else { return }
-        let prompt = modelPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-
+    func generateObject() async {
+        guard canGenerateObject else { return }
+        let prompt = objectPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         animator.pause()
-        isGenerating = true
-        generationError = nil
-        defer { isGenerating = false }
+        isGeneratingObject = true
+        objectError = nil
+        defer { isGeneratingObject = false }
 
         do {
-            let model = try await generationService.generateModel(prompt: prompt)
-            workspace.setModelContent(model.entity)
-            currentModel = ModelSummary(name: model.displayName, source: model.source)
-            setModelSelected(false)
+            let model = try await generationService.generateObject(prompt: prompt)
+            let object = workspace.addObject(model.entity, name: model.displayName)
+            objects.append(ObjectSummary(id: object.id, name: model.displayName, source: model.source))
+            selectObject(object.id)
+            objectNote = model.note
+            objectPrompt = ""
         } catch {
-            generationError = error.localizedDescription
+            objectError = error.localizedDescription
         }
     }
 
-    func resetModelPlacement() {
+    func duplicateSelectedObject() {
+        guard let summary = selectedObject, let object = workspace.object(withID: summary.id) else { return }
         animator.pause()
-        workspace.resetModelPlacement()
+        let copy = workspace.duplicate(object)
+        objects.append(ObjectSummary(id: copy.id, name: summary.name, source: summary.source))
+        selectObject(copy.id)
     }
 
-    /// The user grabbed the model: hand control back to them.
-    func modelManipulationBegan() {
+    func deleteSelectedObject() {
+        guard let id = selectedObjectID, let object = workspace.object(withID: id) else { return }
         animator.pause()
-        setModelSelected(true)
+        workspace.remove(object)
+        objects.removeAll { $0.id == id }
+        selectObject(nil)
     }
 
-    func setModelSelected(_ isSelected: Bool) {
-        isModelSelected = isSelected && currentModel != nil
-        workspace.setSelectionVisible(isModelSelected)
+    func selectObject(_ id: Entity.ID?) {
+        selectedObjectID = id
+        workspace.showSelection(on: id.flatMap { workspace.object(withID: $0) })
+    }
+
+    func selectObject(containing entity: Entity) {
+        if let object = workspace.object(containing: entity) {
+            selectObject(object.id)
+        }
+    }
+
+    /// The user grabbed an object: stop playback so it doesn't fight their hands.
+    func manipulationBegan(on entity: Entity) {
+        animator.pause()
+        selectObject(containing: entity)
     }
 
     // MARK: Background
@@ -149,6 +303,16 @@ class AppModel {
         backgroundError = message
     }
 
+    private func apply(_ newBackground: BackdropImage) async {
+        do {
+            try await workspace.setBackdropImage(newBackground.image)
+            background = newBackground
+            backgroundError = nil
+        } catch {
+            backgroundError = "That image couldn't be shown as a backdrop."
+        }
+    }
+
     // MARK: Capture
 
     enum CaptureStatus: Equatable {
@@ -162,16 +326,16 @@ class AppModel {
     private(set) var captureStatus: CaptureStatus?
 
     func captureComposition() async {
-        guard hasModel, let background, !isCapturing else { return }
+        guard let background, !isCapturing else { return }
         isCapturing = true
         captureStatus = nil
         defer { isCapturing = false }
 
         do {
             let image = try await CompositionRenderer().render(
-                model: workspace.stageModel,
+                scene: workspace.baseAnchor,
                 background: background.image,
-                viewerPosition: ViewerPoseProvider.shared.viewerPosition
+                viewerPosition: SpatialTrackingService.shared.viewerPosition
             )
             lastCapture = UIImage(cgImage: image)
         } catch {
@@ -189,16 +353,6 @@ class AppModel {
             captureStatus = .saved
         } catch {
             captureStatus = .failed(error.localizedDescription)
-        }
-    }
-
-    private func apply(_ newBackground: BackdropImage) async {
-        do {
-            try await workspace.setBackdropImage(newBackground.image)
-            background = newBackground
-            backgroundError = nil
-        } catch {
-            backgroundError = "That image couldn't be shown as a backdrop."
         }
     }
 }
