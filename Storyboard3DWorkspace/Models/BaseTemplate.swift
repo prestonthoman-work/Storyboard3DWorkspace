@@ -28,7 +28,7 @@ enum BaseTemplate: String, CaseIterable, Identifiable {
         case .grass: "leaf"
         case .streets: "road.lanes"
         case .sand: "sun.max"
-        case .plaza: "square.grid.3x3"
+        case .plaza: "circle.grid.cross"
         }
     }
 
@@ -52,7 +52,7 @@ enum BaseTemplate: String, CaseIterable, Identifiable {
     }
 }
 
-/// Limits for the square base's width, in centimeters.
+/// Limits for the round base's diameter, in centimeters.
 enum BaseSizeLimits {
     static let range: ClosedRange<Double> = 20...150
     static let step: Double = 5

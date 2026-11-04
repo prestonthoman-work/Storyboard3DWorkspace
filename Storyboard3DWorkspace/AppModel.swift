@@ -133,13 +133,13 @@ class AppModel {
     }
 
     private(set) var base = BaseSummary(name: BaseTemplate.grass.name, origin: .template(.grass))
-    /// Width of the square base, in centimeters.
+    /// Diameter of the round base, in centimeters.
     var baseWidth: Double = BaseSizeLimits.defaultWidth {
         didSet { workspace.setBaseSize(baseMeters) }
     }
     private var baseMeters: Float { Float(baseWidth) / 100 }
 
-    /// Sizes the base to fill most of the table it's on, leaving a margin at the edges.
+    /// Sizes the base to fit within the table's shorter side, leaving a margin at the edges.
     func fitBaseToTable() {
         guard let anchored = anchoredTable,
               let table = SpatialTrackingService.shared.tables[anchored.id]

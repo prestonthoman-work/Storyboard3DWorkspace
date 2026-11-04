@@ -78,7 +78,7 @@ final class WorkspaceScene {
     // MARK: Base content
 
     /// Replaces the base platform. `content` may be any size; it's scaled so its widest
-    /// side matches `size`, centered, and rested on the anchor.
+    /// extent matches `size` (the diameter), centered, and rested on the anchor.
     func setBase(_ content: Entity, size: Float) {
         baseContent?.removeFromParent()
         baseContent = content
@@ -95,7 +95,7 @@ final class WorkspaceScene {
         content.position = [-bounds.center.x * scale, -bounds.min.y * scale, -bounds.center.z * scale]
         let height = bounds.extents.y * scale
         objectsContainer.position = [0, height, 0]
-        objectsContainer.components.set(GravitySurfaceComponent(baseHalfWidth: size / 2, baseHeight: height))
+        objectsContainer.components.set(GravitySurfaceComponent(baseRadius: size / 2, baseHeight: height))
     }
 
     // MARK: Objects
@@ -227,11 +227,11 @@ final class WorkspaceScene {
             }
         }
         // Stay inside the base, whatever size it currently is.
-        let halfWidth = objectsContainer.components[GravitySurfaceComponent.self]?.baseHalfWidth ?? 0.3
-        let reach = max(halfWidth - 0.04, 0)
+        let radius = objectsContainer.components[GravitySurfaceComponent.self]?.baseRadius ?? 0.3
+        let reach = max(radius - 0.04, 0)
         let taken = objects.map { SIMD2($0.position.x, $0.position.z) }
         let spot = candidates.first { candidate in
-            abs(candidate.x) <= reach && abs(candidate.y) <= reach
+            simd_length(candidate) <= reach
                 && taken.allSatisfy { simd_distance($0, candidate) > spacing * 0.7 }
         } ?? [0, 0]
         return [spot.x, 0, spot.y]

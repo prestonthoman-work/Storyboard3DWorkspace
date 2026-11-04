@@ -16,8 +16,8 @@ struct ObjectGravityComponent: Component {
 /// Describes the surface the objects in a container rest on. Lives on the objects container,
 /// whose origin is the center of the base's top surface.
 struct GravitySurfaceComponent: Component {
-    /// Half the base's width. Objects centered outside it rest on the table instead.
-    var baseHalfWidth: Float
+    /// Radius of the round base. Objects centered outside it rest on the table instead.
+    var baseRadius: Float
     /// Height of the base's top above the table it sits on.
     var baseHeight: Float
 }
@@ -85,8 +85,7 @@ struct ObjectGravitySystem: System {
         }
         guard let bounds else { return nil }
 
-        let isOverBase = abs(bounds.center.x) <= surface.baseHalfWidth
-            && abs(bounds.center.z) <= surface.baseHalfWidth
+        let isOverBase = simd_length(SIMD2(bounds.center.x, bounds.center.z)) <= surface.baseRadius
         let floor: Float = isOverBase ? 0 : -surface.baseHeight
         return bounds.min.y - floor
     }

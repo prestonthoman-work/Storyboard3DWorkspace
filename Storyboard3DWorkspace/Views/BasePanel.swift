@@ -80,12 +80,12 @@ private struct BaseSizeControl: View {
                 if appModel.tablePlacement == .onTable {
                     Button("Fit to Table") { appModel.fitBaseToTable() }
                         .buttonStyle(.bordered)
-                        .help("Size the base to fill most of the table")
+                        .help("Size the base to fit the table")
                 }
             }
 
             Slider(value: $appModel.baseWidth, in: BaseSizeLimits.range, step: BaseSizeLimits.step) {
-                Text("Base size")
+                Text("Base diameter")
             } minimumValueLabel: {
                 Text("\(Int(BaseSizeLimits.range.lowerBound))")
             } maximumValueLabel: {
@@ -93,7 +93,7 @@ private struct BaseSizeControl: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-            .accessibilityValue("\(Int(appModel.baseWidth)) centimeters")
+            .accessibilityValue("\(Int(appModel.baseWidth)) centimeters across")
         }
     }
 }
@@ -148,15 +148,15 @@ private struct TemplateButton: View {
     var body: some View {
         Button(action: action) {
             VStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 12)
+                Circle()
                     .fill(template.swatch)
-                    .frame(width: 64, height: 48)
+                    .frame(width: 56, height: 56)
                     .overlay {
                         Image(systemName: template.symbol)
                             .foregroundStyle(.white.opacity(0.9))
                     }
                     .overlay {
-                        RoundedRectangle(cornerRadius: 12)
+                        Circle()
                             .strokeBorder(.white, lineWidth: isSelected ? 3 : 0)
                     }
                 Text(template.name)
