@@ -6,20 +6,23 @@
 //
 
 import SwiftUI
-import RealityKit
 
 struct ContentView: View {
 
+    @Environment(AppModel.self) private var appModel
+
     var body: some View {
-        VStack {
-            Model3D(named: "Scene", bundle: .main)
-                .padding(.bottom, 50)
-
-            Text("Hello, world!")
-
-            ToggleImmersiveSpaceButton()
+        Group {
+            if appModel.immersiveSpaceState == .open {
+                WorkspacePanel()
+            } else {
+                WelcomeView()
+            }
         }
-        .padding()
+        .frame(width: 460, height: 500)
+        .task {
+            await appModel.loadDefaultBackgroundIfNeeded()
+        }
     }
 }
 

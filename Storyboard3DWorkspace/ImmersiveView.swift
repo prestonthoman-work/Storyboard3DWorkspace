@@ -10,15 +10,37 @@ import RealityKit
 
 struct ImmersiveView: View {
 
+    @Environment(AppModel.self) private var appModel
+
     var body: some View {
         RealityView { content in
-            // Add the initial RealityKit content
-            if let immersiveContentEntity = try? await Entity(named: "Immersive", in: .main) {
-                content.add(immersiveContentEntity)
+            let workspace = appModel.workspace
+            // The root may still be parented to a previous session's content.
+            workspace.root.removeFromParent()
+            content.add(workspace.root)
 
-                // Put skybox here.  See example in World project available at
-                // https://developer.apple.com/
-            }
+            let stage = workspace.stageModel
+            workspace.subscriptions = [
+                content.subscribe(to: ManipulationEvents.WillBegin.self, on: stage) { _ in
+                    appModel.modelManipulationBegan()
+                },
+                content.subscribe(to: ManipulationEvents.DidUpdateTransform.self, on: stage) { _ in
+                    workspace.clampModelScale()
+                }
+            ]
+        }
+        .gesture(
+            SpatialTapGesture()
+                .targetedToEntity(appModel.workspace.stageModel)
+                .onEnded { _ in appModel.setModelSelected(true) }
+        )
+        .task {
+            await ViewerPoseProvider.shared.start()
+        }
+        .onDisappear {
+            appModel.animator.pause()
+            ViewerPoseProvider.shared.stop()
+            appModel.workspace.subscriptions.removeAll()
         }
     }
 }

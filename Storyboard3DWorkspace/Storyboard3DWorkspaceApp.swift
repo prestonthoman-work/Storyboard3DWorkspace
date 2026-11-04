@@ -6,16 +6,27 @@
 //
 
 import SwiftUI
+import RealityKit
 
 @main
 struct Storyboard3DWorkspaceApp: App {
 
     @State private var appModel = AppModel()
 
-    var body: some Scene {
+    init() {
+        ViewerFacingBackdropComponent.registerComponent()
+        ViewerFacingBackdropSystem.registerSystem()
+    }
+
+    var body: some SwiftUI.Scene {
         WindowGroup {
             ContentView()
                 .environment(appModel)
+        }
+        .windowResizability(.contentSize)
+        // A utility panel sits low and close to the viewer, keeping the model's sight line clear.
+        .defaultWindowPlacement { _, _ in
+            WindowPlacement(.utilityPanel)
         }
 
         ImmersiveSpace(id: appModel.immersiveSpaceID) {
