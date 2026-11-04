@@ -177,6 +177,16 @@ final class WorkspaceScene {
         return copy
     }
 
+    /// Swaps an object's geometry (new color, or regenerated) while keeping its identity,
+    /// pose, and keyframes.
+    func replaceContent(of object: Entity, with content: Entity) {
+        for child in object.children where child.name != Self.selectionIndicatorName {
+            child.removeFromParent()
+        }
+        object.addChild(content)
+        configureInteraction(for: object)
+    }
+
     func remove(_ object: Entity) {
         if selectionIndicator.parent == object { selectionIndicator.removeFromParent() }
         object.removeFromParent()

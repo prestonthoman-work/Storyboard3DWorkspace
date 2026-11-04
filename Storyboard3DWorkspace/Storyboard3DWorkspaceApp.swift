@@ -7,6 +7,7 @@
 
 import SwiftUI
 import RealityKit
+import TipKit
 
 @main
 struct Storyboard3DWorkspaceApp: App {
@@ -21,6 +22,7 @@ struct Storyboard3DWorkspaceApp: App {
         GravitySurfaceComponent.registerComponent()
         ObjectGravitySystem.registerSystem()
         PlacedObjectComponent.registerComponent()
+        try? Tips.configure()
     }
 
     var body: some SwiftUI.Scene {

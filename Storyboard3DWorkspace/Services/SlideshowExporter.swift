@@ -25,10 +25,12 @@ nonisolated enum SlideshowExporter {
     static let width = 1920
     static let height = 1080
     static let framesPerSecond: Int32 = 30
-    static let secondsPerSlide = 2.0
     static let crossfadeSeconds = 0.5
 
-    static func export(_ slides: [CGImage], to url: URL) async throws {
+    /// - Parameters:
+    ///   - secondsPerSlide: How long each image is on screen, including its crossfade.
+    ///   - crossfade: Whether images dissolve into each other or cut.
+    static func export(_ slides: [CGImage], secondsPerSlide: Double, crossfade: Bool, to url: URL) async throws {
         guard !slides.isEmpty else { throw ExportError.noSlides }
         try? FileManager.default.removeItem(at: url)
 
@@ -49,7 +51,9 @@ nonisolated enum SlideshowExporter {
         writer.startSession(atSourceTime: .zero)
 
         let holdFrames = Int(secondsPerSlide * Double(framesPerSecond))
-        let fadeFrames = slides.count > 1 ? Int(crossfadeSeconds * Double(framesPerSecond)) : 0
+        let fadeFrames = crossfade && slides.count > 1
+            ? min(Int(crossfadeSeconds * Double(framesPerSecond)), holdFrames / 2)
+            : 0
         var frameIndex: Int64 = 0
 
         func append(_ frame: CVReadOnlyPixelBuffer) async throws {

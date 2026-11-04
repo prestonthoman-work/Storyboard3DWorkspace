@@ -133,6 +133,9 @@ struct ProjectsView: View {
                     newName = project.name
                     renaming = project
                 }
+                Button("Duplicate", systemImage: "plus.square.on.square") {
+                    appModel.duplicateProject(project.id)
+                }
                 Button("Delete", systemImage: "trash", role: .destructive) {
                     deleting = project
                 }

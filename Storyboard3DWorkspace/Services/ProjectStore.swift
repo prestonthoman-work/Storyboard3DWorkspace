@@ -86,6 +86,18 @@ enum ProjectStore {
         try write(info)
     }
 
+    /// Copies a project, with all its photos and backdrop, under a new name.
+    static func duplicate(_ project: UUID, name: String) throws -> Info {
+        guard var info = (try? Data(contentsOf: infoFile(project))).flatMap({ try? JSONDecoder().decode(Info.self, from: $0) })
+        else { throw CocoaError(.fileReadNoSuchFile) }
+        info.id = UUID()
+        info.name = name
+        info.modified = .now
+        try FileManager.default.copyItem(at: folder(project), to: folder(info.id))
+        try write(info)
+        return info
+    }
+
     static func delete(_ project: UUID) throws {
         try FileManager.default.removeItem(at: folder(project))
     }

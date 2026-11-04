@@ -26,6 +26,30 @@ enum ModelRecipe: Codable, Equatable {
     case sampleObject(kind: String, color: String?)
     case placeholder(color: String?)
     case baseTemplate(String)
+
+    /// The color name, for recipes that can be recolored.
+    var colorName: String? {
+        switch self {
+        case .sampleObject(_, let color), .placeholder(let color): color
+        case .baseTemplate: nil
+        }
+    }
+
+    var canRecolor: Bool {
+        switch self {
+        case .sampleObject, .placeholder: true
+        case .baseTemplate: false
+        }
+    }
+
+    /// The same content in another color (nil for its default colors).
+    func recolored(_ color: String?) -> ModelRecipe {
+        switch self {
+        case .sampleObject(let kind, _): .sampleObject(kind: kind, color: color)
+        case .placeholder: .placeholder(color: color)
+        case .baseTemplate: self
+        }
+    }
 }
 
 struct GeneratedModel {

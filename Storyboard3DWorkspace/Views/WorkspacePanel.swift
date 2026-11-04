@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import TipKit
 
 /// The control panel shown while the immersive workspace is open. One tab per workflow step.
 struct WorkspacePanel: View {
@@ -14,42 +15,47 @@ struct WorkspacePanel: View {
 
         TabView(selection: $appModel.selectedTab) {
             Tab("Base", systemImage: "square.3.layers.3d.down.right", value: WorkspaceTab.base) {
-                PanelPage(title: "Base") { BasePanel() }
+                PanelPage(title: "Base", tip: BaseTip()) { BasePanel() }
             }
             Tab("Objects", systemImage: "cube", value: WorkspaceTab.objects) {
-                PanelPage(title: "Objects") { ObjectsPanel() }
+                PanelPage(title: "Objects", tip: ObjectsTip()) { ObjectsPanel() }
             }
             Tab("Background", systemImage: "photo", value: WorkspaceTab.background) {
-                PanelPage(title: "Background") { BackgroundPanel() }
+                PanelPage(title: "Background", tip: BackgroundTip()) { BackgroundPanel() }
             }
             Tab("Animate", systemImage: "film", value: WorkspaceTab.animate) {
-                PanelPage(title: "Animate") { AnimatePanel() }
+                PanelPage(title: "Animate", tip: AnimateTip()) { AnimatePanel() }
             }
             Tab("Capture", systemImage: "camera", value: WorkspaceTab.capture) {
-                PanelPage(title: "Capture") { CapturePanel() }
+                PanelPage(title: "Capture", tip: CaptureTip()) { CapturePanel() }
             }
         }
     }
 }
 
 /// Shared page chrome: a title and the Exit button.
-private struct PanelPage<Content: View>: View {
+private struct PanelPage<Content: View, PageTip: Tip>: View {
     let title: String
+    /// Shown above the page until dismissed.
+    let tip: PageTip
     @ViewBuilder var content: Content
 
     var body: some View {
         NavigationStack {
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.horizontal, 28)
-                .padding(.bottom, 24)
-                .navigationTitle(title)
-                .toolbar {
-                    ToolbarItemGroup(placement: .topBarTrailing) {
-                        UndoRedoButtons()
-                        ToggleImmersiveSpaceButton()
-                    }
+            VStack(alignment: .leading, spacing: 12) {
+                TipView(tip)
+                content
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 28)
+            .padding(.bottom, 24)
+            .navigationTitle(title)
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    UndoRedoButtons()
+                    ToggleImmersiveSpaceButton()
                 }
+            }
         }
     }
 }

@@ -256,14 +256,31 @@ private struct ExportButton: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        Menu {
-            Button("Slideshow Video", systemImage: "film") {
-                Task { await appModel.exportSlideshow() }
-            }
-            .disabled(appModel.slideshowCoverage.withPhoto == 0)
+        @Bindable var appModel = appModel
 
-            Button("Storyboard Sheet (PDF)", systemImage: "doc.richtext") {
-                appModel.exportStoryboardSheet()
+        Menu {
+            Section("Slideshow Video") {
+                Picker("Seconds per Shot", selection: $appModel.slideshowSecondsPerShot) {
+                    ForEach([1.0, 1.5, 2, 3, 4, 5], id: \.self) { seconds in
+                        Text(seconds.formatted(.number.precision(.fractionLength(0...1))) + " s").tag(seconds)
+                    }
+                }
+                Toggle("Crossfade", isOn: $appModel.slideshowCrossfade)
+                Button("Export Slideshow", systemImage: "film") {
+                    Task { await appModel.exportSlideshow() }
+                }
+                .disabled(appModel.slideshowCoverage.withPhoto == 0)
+            }
+            Section("Storyboard Sheet (PDF)") {
+                Picker("Shots per Page", selection: $appModel.sheetLayout) {
+                    ForEach(StoryboardSheetExporter.Layout.allCases) { layout in
+                        Text(layout.label).tag(layout)
+                    }
+                }
+                Toggle("Include Notes", isOn: $appModel.sheetIncludesNotes)
+                Button("Export Storyboard Sheet", systemImage: "doc.richtext") {
+                    appModel.exportStoryboardSheet()
+                }
             }
         } label: {
             if appModel.isExporting {

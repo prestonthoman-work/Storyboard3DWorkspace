@@ -79,6 +79,25 @@ class AppModel {
         refreshProjects()
     }
 
+    /// Copies a project so a variation can be tried without changing the original.
+    func duplicateProject(_ id: UUID) {
+        if currentProject?.id == id { saveNow() }
+        guard let original = projects.first(where: { $0.id == id }) else { return }
+        let existing = Set(projects.map(\.name))
+        var name = "\(original.name) Copy"
+        var number = 2
+        while existing.contains(name) {
+            name = "\(original.name) Copy \(number)"
+            number += 1
+        }
+        do {
+            _ = try ProjectStore.duplicate(id, name: name)
+        } catch {
+            projectError = "That project couldn't be duplicated."
+        }
+        refreshProjects()
+    }
+
     func deleteProject(_ id: UUID) {
         try? ProjectStore.delete(id)
         if currentProject?.id == id {
@@ -375,6 +394,67 @@ class AppModel {
         let changed = animator.removeObject(id)
         changed.forEach(detachPhotos(from:))
         documentChanged()
+    }
+
+    var canRecolorSelectedObject: Bool { selectedObject?.recipe.canRecolor ?? false }
+
+    /// Recolors the selected object in place. Its name follows if it still has the
+    /// automatic name (such as "Red House"); a custom name is kept.
+    func recolorSelectedObject(_ color: String?) {
+        guard let summary = selectedObject, summary.recipe.canRecolor,
+              summary.recipe.colorName != color,
+              let object = workspace.object(withID: summary.id)
+        else { return }
+        let recipe = summary.recipe.recolored(color)
+        guard let content = recipe.makeEntity() else { return }
+
+        checkpoint()
+        workspace.replaceContent(of: object, with: content)
+        let name = summary.name == summary.recipe.defaultName ? (recipe.defaultName ?? summary.name) : summary.name
+        object.name = name
+        updateSummary(summary.id) { ObjectSummary(id: $0.id, name: name, source: $0.source, recipe: recipe) }
+        workspace.showSelection(on: object)
+        documentChanged()
+    }
+
+    /// Replaces the selected object with whatever the prompt describes, keeping its
+    /// position, size, rotation, and keyframes.
+    func replaceSelectedObject() async {
+        guard canGenerateObject, let summary = selectedObject else { return }
+        let prompt = objectPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        animator.pause()
+        isGeneratingObject = true
+        objectError = nil
+        defer { isGeneratingObject = false }
+
+        do {
+            let model = try await generationService.generateObject(prompt: prompt)
+            guard let object = workspace.object(withID: summary.id) else { return }
+            checkpoint()
+            workspace.replaceContent(of: object, with: model.entity)
+            object.name = model.displayName
+            updateSummary(summary.id) { ObjectSummary(id: $0.id, name: model.displayName, source: model.source, recipe: model.recipe) }
+            workspace.showSelection(on: object)
+            objectNote = model.note
+            objectPrompt = ""
+            documentChanged()
+        } catch {
+            objectError = error.localizedDescription
+        }
+    }
+
+    func renameObject(_ id: ObjectID, to name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let summary = objects.first(where: { $0.id == id }), summary.name != name else { return }
+        checkpoint()
+        workspace.object(withID: id)?.name = name
+        updateSummary(id) { ObjectSummary(id: $0.id, name: name, source: $0.source, recipe: $0.recipe) }
+        documentChanged()
+    }
+
+    private func updateSummary(_ id: ObjectID, _ change: (ObjectSummary) -> ObjectSummary) {
+        guard let index = objects.firstIndex(where: { $0.id == id }) else { return }
+        objects[index] = change(objects[index])
     }
 
     func selectObject(_ id: ObjectID?) {
@@ -743,6 +823,21 @@ class AppModel {
     private(set) var exportedFile: ExportedFile?
     private(set) var exportError: String?
 
+    // Export settings, remembered across launches.
+    var slideshowSecondsPerShot: Double = UserDefaults.standard.object(forKey: "slideshowSecondsPerShot") as? Double ?? 2 {
+        didSet { UserDefaults.standard.set(slideshowSecondsPerShot, forKey: "slideshowSecondsPerShot") }
+    }
+    var slideshowCrossfade: Bool = UserDefaults.standard.object(forKey: "slideshowCrossfade") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(slideshowCrossfade, forKey: "slideshowCrossfade") }
+    }
+    var sheetLayout: StoryboardSheetExporter.Layout =
+        StoryboardSheetExporter.Layout(rawValue: UserDefaults.standard.integer(forKey: "sheetLayout")) ?? .six {
+        didSet { UserDefaults.standard.set(sheetLayout.rawValue, forKey: "sheetLayout") }
+    }
+    var sheetIncludesNotes: Bool = UserDefaults.standard.object(forKey: "sheetIncludesNotes") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(sheetIncludesNotes, forKey: "sheetIncludesNotes") }
+    }
+
     /// How many keyframes have a primary photo, out of all keyframes.
     var slideshowCoverage: (withPhoto: Int, total: Int) {
         let keyframes = animator.timeline.keyframes
@@ -764,9 +859,11 @@ class AppModel {
         defer { isExporting = false }
 
         let url = exportURL(suffix: "Slideshow", fileExtension: "mp4")
+        let seconds = slideshowSecondsPerShot
+        let crossfade = slideshowCrossfade
         do {
             try await Task.detached(priority: .userInitiated) {
-                try await SlideshowExporter.export(slides, to: url)
+                try await SlideshowExporter.export(slides, secondsPerSlide: seconds, crossfade: crossfade, to: url)
             }.value
             exportedFile = ExportedFile(url: url, shareTitle: "Share Slideshow")
         } catch {
@@ -791,7 +888,8 @@ class AppModel {
         }
         let url = exportURL(suffix: "Storyboard", fileExtension: "pdf")
         do {
-            try StoryboardSheetExporter.export(title: projectName, panels: panels, to: url)
+            try StoryboardSheetExporter.export(title: projectName, panels: panels, layout: sheetLayout,
+                                               includeNotes: sheetIncludesNotes, to: url)
             exportedFile = ExportedFile(url: url, shareTitle: "Share Storyboard Sheet")
         } catch {
             exportError = "The storyboard sheet couldn't be created."
@@ -902,11 +1000,16 @@ class AppModel {
         for summary in objects where !wanted.contains(summary.id) {
             if let entity = workspace.object(withID: summary.id) { workspace.remove(entity) }
         }
+        let currentRecipes = Dictionary(uniqueKeysWithValues: objects.map { ($0.id, $0.recipe) })
         var summaries: [ObjectSummary] = []
         for object in state.objects {
             let entity: Entity
             if let existing = workspace.object(withID: object.id) {
                 entity = existing
+                if currentRecipes[object.id] != object.recipe, let content = object.recipe.makeEntity() {
+                    workspace.replaceContent(of: existing, with: content)
+                }
+                existing.name = object.name
             } else if let content = object.recipe.makeEntity() {
                 entity = workspace.addObject(content, name: object.name, id: object.id)
             } else {

@@ -63,6 +63,9 @@ enum SampleObjectCatalog {
         ("black", UIColor(red: 0.18, green: 0.18, blue: 0.20, alpha: 1))
     ]
 
+    /// Color names offered for recoloring, in display order.
+    static let colorNames = colors.map(\.0).filter { $0 != "grey" }
+
     static func color(named name: String?) -> UIColor? {
         guard let name else { return nil }
         return colors.first { $0.0 == name }?.1
