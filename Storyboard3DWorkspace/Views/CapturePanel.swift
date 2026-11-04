@@ -9,8 +9,6 @@ struct CapturePanel: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        @Bindable var appModel = appModel
-
         VStack(alignment: .leading, spacing: 14) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -21,33 +19,10 @@ struct CapturePanel: View {
             .scrollIndicators(.hidden)
 
             CaptureTargetLine()
-
-            HStack(spacing: 12) {
-                if let remaining = appModel.captureCountdown {
-                    Button("Cancel (\(remaining))", systemImage: "xmark") {
-                        appModel.cancelCapture()
-                    }
-                } else {
-                    Button {
-                        appModel.startCapture()
-                    } label: {
-                        Label("Capture", systemImage: "camera.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!appModel.canCapture)
-                }
-
-                Picker("Lens", selection: $appModel.captureLens) {
-                    ForEach(CaptureLens.allCases) { lens in
-                        Text(lens.label).tag(lens)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .disabled(appModel.captureCountdown != nil)
+            CaptureControls {
+                appModel.startCapture()
             }
-            .buttonStyle(.bordered)
-
-            status
+            CaptureStatusLine()
         }
     }
 
@@ -96,29 +71,6 @@ struct CapturePanel: View {
         }
     }
 
-    @ViewBuilder
-    private var status: some View {
-        switch appModel.captureStatus {
-        case .attached(let number):
-            Label("Added to keyframe \(number).", systemImage: "checkmark.circle.fill")
-                .font(.callout)
-                .foregroundStyle(.green)
-        case .libraryOnly:
-            Label("Saved to the library. It isn't attached to a keyframe.", systemImage: "photo.on.rectangle")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        case .saved:
-            Label("Saved to Photos", systemImage: "checkmark.circle.fill")
-                .font(.callout)
-                .foregroundStyle(.green)
-        case .failed(let message):
-            Text(message)
-                .font(.callout)
-                .foregroundStyle(.red)
-        case nil:
-            EmptyView()
-        }
-    }
 }
 
 /// Before shooting: says whether the photo will attach to a keyframe.

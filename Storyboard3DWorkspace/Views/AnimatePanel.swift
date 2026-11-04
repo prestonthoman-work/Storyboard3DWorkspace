@@ -5,23 +5,25 @@
 
 import SwiftUI
 
+/// Keyframes and their photos together: the selected keyframe's photo up top, a camera
+/// to shoot it, the timeline, and a storyboard of every keyframe's primary photo.
 struct AnimatePanel: View {
     @Environment(AppModel.self) private var appModel
 
     private var animator: KeyframeAnimator { appModel.animator }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if animator.timeline.keyframes.isEmpty {
-                        Text("Arrange the objects, then add a keyframe. Rearrange them and add another, and playback moves everything smoothly between keyframes.")
+                        Text("Arrange the objects, then add a keyframe. Rearrange them and add another, and playback moves everything smoothly between keyframes. Each keyframe can hold photos for your storyboard.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     } else {
-                        KeyframePhotos()
+                        SelectedKeyframeShot()
                         transport
-                        keyframeChips
+                        StoryboardStrip()
                     }
                 }
             }
@@ -61,31 +63,6 @@ struct AnimatePanel: View {
         }
     }
 
-    private var keyframeChips: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                ForEach(Array(animator.timeline.keyframes.enumerated()), id: \.element.id) { index, keyframe in
-                    let isSelected = keyframe.id == animator.selectedKeyframeID
-                    let hasPhoto = appModel.photos.primaryPhoto(for: keyframe.id) != nil
-                    Button("\(index + 1)") { appModel.selectKeyframe(keyframe) }
-                        .buttonBorderShape(.circle)
-                        .tint(isSelected ? .accentColor : nil)
-                        .buttonStyle(.bordered)
-                        .overlay(alignment: .bottom) {
-                            // A dot marks keyframes that already have a photo.
-                            if hasPhoto {
-                                Circle().fill(.white).frame(width: 5, height: 5).offset(y: 6)
-                            }
-                        }
-                        .accessibilityLabel("Keyframe \(index + 1)\(hasPhoto ? ", has photo" : "")")
-                        .accessibilityAddTraits(isSelected ? .isSelected : [])
-                }
-            }
-            .padding(.bottom, 8)
-        }
-        .scrollIndicators(.hidden)
-    }
-
     private var editActions: some View {
         HStack(spacing: 12) {
             Button {
@@ -111,8 +88,8 @@ struct AnimatePanel: View {
     }
 }
 
-/// The selected keyframe's photos: a large view of one, and a strip to switch between them.
-private struct KeyframePhotos: View {
+/// The selected keyframe: its photo, its other photos, and a camera to take more.
+private struct SelectedKeyframeShot: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
@@ -122,45 +99,13 @@ private struct KeyframePhotos: View {
             let focused = appModel.focusedKeyframePhoto
 
             VStack(alignment: .leading, spacing: 10) {
-                PhotoFrame(image: focused.flatMap { appModel.photos.image(for: $0) }) {
-                    VStack(spacing: 10) {
-                        Text("No photo for keyframe \(number) yet.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Button("Take Photo", systemImage: "camera") {
-                            appModel.takePhotoForSelectedKeyframe()
-                        }
-                        .disabled(!appModel.canCapture)
-                    }
-                }
-
-                if !keyframePhotos.isEmpty {
-                    HStack(alignment: .center, spacing: 10) {
-                        ScrollView(.horizontal) {
-                            HStack(spacing: 8) {
-                                ForEach(keyframePhotos) { photo in
-                                    PhotoThumbnail(photo: photo,
-                                                   isSelected: photo.id == focused?.id,
-                                                   isPrimary: appModel.photos.isPrimary(photo),
-                                                   width: 88) {
-                                        appModel.focusedKeyframePhotoID = photo.id
-                                    }
-                                }
-                            }
-                        }
-                        .scrollIndicators(.hidden)
-
-                        Button("Take Photo", systemImage: "camera") {
-                            appModel.takePhotoForSelectedKeyframe()
-                        }
-                        .labelStyle(.iconOnly)
-                        .disabled(!appModel.canCapture)
-                        .help("Take another photo of this keyframe")
-                    }
-
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Keyframe \(number)")
+                        .font(.headline)
+                    Spacer()
                     if let focused {
                         if appModel.photos.isPrimary(focused) {
-                            Label("Primary photo for keyframe \(number)", systemImage: "star.fill")
+                            Label("Primary", systemImage: "star.fill")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         } else {
@@ -171,12 +116,124 @@ private struct KeyframePhotos: View {
                         }
                     }
                 }
+
+                PhotoFrame(image: focused.flatMap { appModel.photos.image(for: $0) }) {
+                    if appModel.isCapturing {
+                        ProgressView()
+                    } else {
+                        Text("No photo yet. Frame the shot in your view, then take a photo.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding()
+                    }
+                }
+
+                if keyframePhotos.count > 1 {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 8) {
+                            ForEach(keyframePhotos) { photo in
+                                PhotoThumbnail(photo: photo,
+                                               isSelected: photo.id == focused?.id,
+                                               isPrimary: appModel.photos.isPrimary(photo),
+                                               width: 80) {
+                                    appModel.focusedKeyframePhotoID = photo.id
+                                }
+                            }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+                }
+
+                CaptureControls(shutterTitle: "Take Photo") {
+                    appModel.takePhotoForSelectedKeyframe()
+                }
+                CaptureStatusLine()
             }
         } else {
-            Text("Select a keyframe to see its photos.")
+            Text("Select a keyframe below to see and take its photos.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Every keyframe as a card showing its primary photo, in timeline order.
+private struct StoryboardStrip: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Storyboard")
+                .font(.headline)
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(Array(appModel.animator.timeline.keyframes.enumerated()), id: \.element.id) { index, keyframe in
+                        StoryboardCard(
+                            number: index + 1,
+                            primary: appModel.photos.primaryPhoto(for: keyframe.id),
+                            photoCount: appModel.photos.photos(for: keyframe.id).count,
+                            isSelected: keyframe.id == appModel.animator.selectedKeyframeID
+                        ) {
+                            appModel.selectKeyframe(keyframe)
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollIndicators(.hidden)
+        }
+    }
+}
+
+private struct StoryboardCard: View {
+    let number: Int
+    let primary: CapturedPhoto?
+    let photoCount: Int
+    let isSelected: Bool
+    let action: () -> Void
+
+    private let width: CGFloat = 104
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 4) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(.quaternary)
+                    if let primary {
+                        Image(uiImage: primary.thumbnail)
+                            .resizable()
+                            .aspectRatio(16 / 9, contentMode: .fill)
+                    } else {
+                        Image(systemName: "camera")
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .frame(width: width, height: width * 9 / 16)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(isSelected ? Color.white : .clear, lineWidth: 3)
+                }
+
+                HStack {
+                    Text("\(number)")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    if photoCount > 1 {
+                        Label("\(photoCount)", systemImage: "photo.stack")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: width)
+            }
+        }
+        .buttonStyle(.plain)
+        .hoverEffect()
+        .accessibilityLabel("Keyframe \(number), \(photoCount == 0 ? "no photos" : "\(photoCount) photos")")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 

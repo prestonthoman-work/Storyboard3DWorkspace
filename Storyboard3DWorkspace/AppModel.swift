@@ -331,6 +331,8 @@ class AppModel {
     enum CaptureStatus: Equatable {
         case attached(keyframeNumber: Int)
         case libraryOnly
+        /// Objects were moved after the keyframe was selected, so a photo wouldn't show it.
+        case sceneChanged(keyframeNumber: Int)
         case saved
         case failed(String)
     }
@@ -350,9 +352,13 @@ class AppModel {
         didSet { workspace.setViewfinderLens(captureLens) }
     }
 
-    /// The viewfinder shows only while the Capture tab is open in the workspace.
+    /// The viewfinder shows whenever a photo can be lined up: on the Capture tab, on the
+    /// Animate tab while a keyframe is selected, and during any countdown.
     var isViewfinderVisible: Bool {
-        immersiveSpaceState == .open && selectedTab == .capture
+        guard immersiveSpaceState == .open else { return false }
+        return selectedTab == .capture
+            || (selectedTab == .animate && animator.selectedKeyframe != nil)
+            || captureCountdown != nil
     }
 
     var canCapture: Bool {
@@ -393,9 +399,16 @@ class AppModel {
         captureCountdown = nil
     }
 
-    /// From the Animate tab: take a photo of the selected keyframe.
+    /// From the Animate tab: take a photo of the selected keyframe, staying on that tab.
+    /// Refuses up front if objects have moved since the keyframe was selected.
     func takePhotoForSelectedKeyframe() {
-        selectedTab = .capture
+        guard let keyframe = animator.selectedKeyframe,
+              let number = animator.number(of: keyframe.id)
+        else { return }
+        guard captureTarget?.keyframe.id == keyframe.id else {
+            captureStatus = .sceneChanged(keyframeNumber: number)
+            return
+        }
         startCapture()
     }
 
@@ -503,6 +516,7 @@ class AppModel {
     func selectKeyframe(_ keyframe: Keyframe) {
         animator.select(keyframe)
         focusedKeyframePhotoID = nil
+        captureStatus = nil
     }
 
     func scrubTimeline(to time: TimeInterval) {
