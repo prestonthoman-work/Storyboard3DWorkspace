@@ -69,7 +69,7 @@ enum StarterScene: String, CaseIterable, Identifiable {
                 Placement(kind: .house, x: 0.17, z: -0.09, yawDegrees: -20),
                 Placement(kind: .lamp, x: -0.09, z: 0.06),
                 Placement(kind: .lamp, x: 0.11, z: 0.06),
-                Placement(kind: .tree, x: -0.19, z: 0.05),
+                Placement(kind: .tree, x: -0.15, z: 0.17),
                 Placement(kind: .tree, x: 0.2, z: 0.07),
                 Placement(kind: .shrub, x: 0.0, z: 0.16),
                 Placement(kind: .car, x: -0.17, z: -0.02, name: "Hero Car", movesTo: [0.15, -0.02]),

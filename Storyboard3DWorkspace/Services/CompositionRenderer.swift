@@ -58,6 +58,7 @@ final class CompositionRenderer {
     static func snapshot(of scene: Entity) -> Entity {
         let subject = scene.clone(recursive: true)
         subject.findEntity(named: WorkspaceScene.selectionIndicatorName)?.removeFromParent()
+        subject.findEntity(named: WorkspaceScene.onionSkinName)?.removeFromParent()
         stripInteraction(from: subject)
         subject.transform = Transform(matrix: scene.transformMatrix(relativeTo: nil))
         return subject
@@ -146,7 +147,8 @@ final class CompositionRenderer {
     /// at, keeping that part of the image in place. If the camera doesn't face the backdrop
     /// at all, a frame-filling plane is built behind the scene instead.
     private func makeBackdrop(live: ModelEntity, image: CGImage, pose: Transform?, camera: CaptureCamera,
-                              sceneCenter: SIMD3<Float>, sceneRadius: Float, tint: SIMD3<Float>) async throws -> Entity {
+                              sceneCenter: SIMD3<Float>, sceneRadius: Float, tint: SIMD3<Float>,
+                              texture cachedTexture: TextureResource? = nil) async throws -> Entity {
         if live.isEnabled, let mesh = live.model?.mesh {
             let copy = live.clone(recursive: false)
             // The copy must hold still: the live system would otherwise re-aim it in the render scene.
@@ -176,7 +178,12 @@ final class CompositionRenderer {
         }
 
         // Fallback: a plane perpendicular to the camera, behind the scene, filling the frame.
-        let texture = try await TextureResource(image: image, withName: nil, options: .init(semantic: .color))
+        let texture: TextureResource
+        if let cachedTexture {
+            texture = cachedTexture
+        } else {
+            texture = try await TextureResource(image: image, withName: nil, options: .init(semantic: .color))
+        }
         var material = UnlitMaterial(applyPostProcessToneMap: false)
         material.color = .init(tint: Self.color(tint), texture: .init(texture))
 
@@ -301,5 +308,95 @@ final class CompositionRenderer {
                 provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
         else { throw RenderError.renderFailed }
         return image
+    }
+}
+
+// MARK: - Sequences
+
+extension CompositionRenderer {
+    /// Renders many frames with one renderer, lighting environment, and target, for the
+    /// animatic. Setting those up is the slow part of a single render; here it happens once.
+    final class Sequence {
+        private let base = CompositionRenderer()
+        private let renderer: RealityRenderer
+        private let texture: any MTLTexture
+        private let output: RealityRenderer.CameraOutput
+        private let camera = PerspectiveCamera()
+        /// Holds each frame's scene, backdrop, and lights; emptied between frames.
+        private let stage = Entity()
+        private let backdrop: ModelEntity
+        private let backdropPose: Transform?
+        private let background: CGImage
+        private let lighting: LightingPreset
+        private let look: CaptureLook
+        private var backgroundTexture: TextureResource?
+
+        init(backdrop: ModelEntity, backdropPose: Transform?, background: CGImage, lighting: LightingPreset,
+             look: CaptureLook, width: Int, height: Int) async throws {
+            guard let device = MTLCreateSystemDefaultDevice() else { throw RenderError.metalUnavailable }
+            self.backdrop = backdrop
+            self.backdropPose = backdropPose
+            self.background = background
+            self.lighting = lighting
+            self.look = look
+
+            renderer = try RealityRenderer()
+            camera.camera.near = 0.01
+            camera.camera.far = 100
+            renderer.entities.append(contentsOf: [stage, camera])
+            renderer.activeCamera = camera
+            renderer.lighting.resource = try await EnvironmentResource(
+                equirectangular: CompositionRenderer.makeEnvironment(for: lighting))
+            renderer.lighting.intensityExponent = lighting.environmentExposure
+            renderer.cameraSettings.colorBackground = .color(CGColor(gray: 0, alpha: 1))
+            renderer.cameraSettings.antialiasing = .multisample4X
+
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                pixelFormat: .bgra8Unorm_srgb, width: width, height: height, mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .shared
+            guard let texture = device.makeTexture(descriptor: descriptor) else { throw RenderError.renderFailed }
+            self.texture = texture
+            output = try RealityRenderer.CameraOutput(.singleProjection(colorTexture: texture))
+        }
+
+        /// - Parameter snapshot: From `CompositionRenderer.snapshot(of:)`; used directly, not copied.
+        func render(snapshot: Entity, frame: CameraPath.Frame) async throws -> CGImage {
+            stage.children.removeAll()
+
+            let bounds = snapshot.visualBounds(relativeTo: nil)
+            let center = bounds.isEmpty ? snapshot.position : bounds.center
+            let radius = max(bounds.isEmpty ? 0.3 : simd_length(bounds.extents) / 2, 0.05)
+
+            camera.camera.fieldOfViewInDegrees = frame.verticalFOV * 180 / .pi
+            camera.position = frame.camera.position
+            camera.orientation = frame.camera.orientation
+
+            if backgroundTexture == nil {
+                backgroundTexture = try await TextureResource(image: background, withName: nil,
+                                                              options: .init(semantic: .color))
+            }
+            let backdropCopy = try await base.makeBackdrop(
+                live: backdrop, image: background, pose: backdropPose, camera: frame.camera,
+                sceneCenter: center, sceneRadius: radius, tint: lighting.backdropTint, texture: backgroundTexture)
+
+            stage.addChild(snapshot)
+            stage.addChild(backdropCopy)
+            for light in CompositionRenderer.lights(for: lighting, camera: frame.camera, center: center) {
+                stage.addChild(light)
+            }
+
+            try renderer.update(0)
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                do {
+                    try renderer.updateAndRender(deltaTime: 0, cameraOutput: output, onComplete: { _ in
+                        continuation.resume()
+                    })
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+            return FilmFinisher.finish(try CompositionRenderer.makeImage(from: texture), look: look, lighting: lighting)
+        }
     }
 }

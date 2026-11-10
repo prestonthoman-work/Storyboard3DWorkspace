@@ -68,6 +68,7 @@ struct ImmersiveView: View {
         } update: { _, attachments in
             appModel.workspace.setViewfinderVisible(appModel.isViewfinderVisible)
             updateLabels(attachments)
+            appModel.workspace.setOnionSkin(appModel.onionSkinPoses)
             if let framing = attachments.entity(for: Self.framingAttachmentID) {
                 let half = WorkspaceScene.viewfinderHalfSize(for: appModel.captureLens)
                 framing.position = [0, -half.y - 0.014, -WorkspaceScene.viewfinderDistance]

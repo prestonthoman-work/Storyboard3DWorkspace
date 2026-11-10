@@ -20,6 +20,7 @@ import UIKit
 /// RealityView content on its own rather than under `root`.
 final class WorkspaceScene {
     static let selectionIndicatorName = "SelectionIndicator"
+    static let onionSkinName = "OnionSkin"
     /// Wide enough to feel unlimited, while preventing objects from collapsing to nothing.
     static let scaleRange: ClosedRange<Float> = 0.02...50
 
@@ -46,6 +47,11 @@ final class WorkspaceScene {
     let handles = SelectionHandles()
     /// Floating name tags. Outside the base, so they're never in a capture.
     let labelsRoot = Entity()
+    /// Translucent ghosts of the previous keyframe. Inside the objects container so they
+    /// share its space, but stripped from every capture.
+    let onionRoot = Entity()
+    /// What the ghosts currently show, so they're only rebuilt when it changes.
+    var onionSkinKey: OnionSkinKey?
     /// Lines shown while an object snaps into line with another.
     private let guideAlongX = ModelEntity()
     private let guideAlongZ = ModelEntity()
@@ -107,6 +113,8 @@ final class WorkspaceScene {
         root.addChild(handles.root)
         labelsRoot.name = "ObjectLabels"
         root.addChild(labelsRoot)
+        onionRoot.name = Self.onionSkinName
+        objectsContainer.addChild(onionRoot)
 
         var guideMaterial = UnlitMaterial(color: UIColor(red: 0.45, green: 0.85, blue: 1, alpha: 1))
         guideMaterial.blending = .transparent(opacity: 0.9)

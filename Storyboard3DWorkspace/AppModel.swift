@@ -28,6 +28,25 @@ class AppModel {
         didSet { UserDefaults.standard.set(isGuideHidden, forKey: "isGuideHidden") }
     }
 
+    /// Faint ghosts of the previous keyframe while editing one. Remembered across launches.
+    var showsOnionSkin: Bool = UserDefaults.standard.object(forKey: "showsOnionSkin") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showsOnionSkin, forKey: "showsOnionSkin") }
+    }
+
+    /// Where objects were in the keyframe before the selected one, for those that have moved
+    /// since. Nil when there's nothing to compare against.
+    var onionSkinPoses: [ObjectID: Transform]? {
+        guard showsOnionSkin, immersiveSpaceState == .open, !animator.isPlaying,
+              let selected = animator.selectedKeyframe,
+              let index = animator.timeline.index(of: selected.id), index > 0 else { return nil }
+        let previous = animator.timeline.keyframes[index - 1]
+        let moved = previous.poses.filter { id, pose in
+            guard let now = selected.poses[id] else { return true }
+            return !KeyframeTimeline.posesMatch([id: pose], [id: now])
+        }
+        return moved.isEmpty ? nil : moved
+    }
+
     /// Floating name tags above objects in the room. Remembered across launches.
     var showsObjectLabels: Bool = UserDefaults.standard.bool(forKey: "showsObjectLabels") {
         didSet { UserDefaults.standard.set(showsObjectLabels, forKey: "showsObjectLabels") }
@@ -1177,6 +1196,10 @@ class AppModel {
     var slideshowCrossfade: Bool = UserDefaults.standard.object(forKey: "slideshowCrossfade") as? Bool ?? true {
         didSet { UserDefaults.standard.set(slideshowCrossfade, forKey: "slideshowCrossfade") }
     }
+    /// Burn "SHOT 03 · WS · notes" into each slide, like a storyboard panel.
+    var slideshowCaptions: Bool = UserDefaults.standard.object(forKey: "slideshowCaptions") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(slideshowCaptions, forKey: "slideshowCaptions") }
+    }
     var sheetLayout: StoryboardSheetExporter.Layout =
         StoryboardSheetExporter.Layout(rawValue: UserDefaults.standard.integer(forKey: "sheetLayout")) ?? .six {
         didSet { UserDefaults.standard.set(sheetLayout.rawValue, forKey: "sheetLayout") }
@@ -1195,9 +1218,15 @@ class AppModel {
     /// without a photo are skipped; other photos taken at a keyframe aren't included.
     func exportSlideshow() async {
         guard !isExporting else { return }
-        let slides = animator.timeline.keyframes
-            .compactMap { photos.primaryPhoto(for: $0.id) }
-            .compactMap { photos.image(for: $0)?.cgImage }
+        flushAutoSave()
+        let captions = slideshowCaptions
+        let slides: [CGImage] = animator.timeline.keyframes.enumerated().compactMap { index, keyframe in
+            guard let photo = photos.primaryPhoto(for: keyframe.id), let image = photos.image(for: photo)?.cgImage
+            else { return nil }
+            guard captions else { return image }
+            return SlideCaption.burn(SlideCaption.caption(number: index + 1, shotType: keyframe.shotType,
+                                                          note: keyframe.note), into: image)
+        }
         guard !slides.isEmpty else { return }
 
         isExporting = true
@@ -1215,6 +1244,93 @@ class AppModel {
             exportedFile = ExportedFile(url: url, shareTitle: "Share Slideshow")
         } catch {
             exportError = error.localizedDescription
+        }
+    }
+
+    // MARK: Animatic
+
+    static let animaticFramesPerSecond: Int32 = 24
+
+    /// 0...1 while an animatic renders.
+    private(set) var animaticProgress: Double?
+    @ObservationIgnored private var animaticTask: Task<Void, Never>?
+
+    /// The camera move: each keyframe's primary photo angle, in timeline order.
+    var animaticCameraPath: CameraPath {
+        CameraPath(stops: animator.timeline.keyframes.compactMap { keyframe in
+            guard let camera = photos.primaryPhoto(for: keyframe.id)?.camera else { return nil }
+            return CameraPath.Stop(time: keyframe.time, camera: camera)
+        })
+    }
+
+    var canExportAnimatic: Bool {
+        animator.timeline.canPlay && background != nil && !animaticCameraPath.isEmpty && !isExporting
+    }
+
+    /// Renders the animation as video: objects move between keyframes while the camera
+    /// glides between each keyframe's photo angle, using the current lighting and look.
+    func exportAnimatic() {
+        guard canExportAnimatic else { return }
+        animaticTask = Task { await renderAnimatic() }
+    }
+
+    func cancelAnimatic() {
+        animaticTask?.cancel()
+    }
+
+    private func renderAnimatic() async {
+        guard let background else { return }
+        flushAutoSave()
+        animator.pause()
+        let path = animaticCameraPath
+        let timeline = animator.timeline
+        let keyframed = timeline.keyframedObjectIDs
+        // The first photographed keyframe decides where the backdrop sits.
+        let backdropPose = timeline.keyframes.lazy
+            .compactMap { self.photos.primaryPhoto(for: $0.id) }
+            .first { $0.camera != nil }?.backdropPose?.transform
+
+        isExporting = true
+        exportError = nil
+        exportedFile = nil
+        animaticProgress = 0
+        defer {
+            isExporting = false
+            animaticProgress = nil
+            animaticTask = nil
+        }
+
+        let fps = Self.animaticFramesPerSecond
+        let frameCount = Int((timeline.duration * Double(fps)).rounded(.up)) + 1
+        let url = exportURL(suffix: "Animatic", fileExtension: "mp4")
+        var writer: VideoStreamWriter?
+        do {
+            let sequence = try await CompositionRenderer.Sequence(
+                backdrop: workspace.backdrop, backdropPose: backdropPose, background: background.image,
+                lighting: captureLighting, look: captureLook,
+                width: SlideshowExporter.width, height: SlideshowExporter.height)
+            writer = try VideoStreamWriter(url: url, framesPerSecond: fps)
+
+            var lastImage: CGImage?
+            for index in 0..<frameCount {
+                try Task.checkCancellation()
+                let time = min(Double(index) / Double(fps), timeline.duration)
+                guard let frame = path.frame(at: time) else { continue }
+                let snapshot = workspace.snapshot(at: timeline.poses(at: time), keyframedObjects: keyframed)
+                let image = try await sequence.render(snapshot: snapshot, frame: frame)
+                try await writer?.append(image)
+                lastImage = image
+                animaticProgress = Double(index + 1) / Double(frameCount)
+            }
+            // Rest on the last shot for a moment.
+            if let lastImage { try await writer?.append(lastImage, count: Int(fps) / 2) }
+            try await writer?.finish()
+            exportedFile = ExportedFile(url: url, shareTitle: "Share Animatic")
+        } catch is CancellationError {
+            writer?.cancel()
+        } catch {
+            writer?.cancel()
+            exportError = "The animatic couldn't be rendered. \(error.localizedDescription)"
         }
     }
 

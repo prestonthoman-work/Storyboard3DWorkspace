@@ -63,8 +63,8 @@ struct TimelineWindow: View {
                         withAnimation(.snappy) { appModel.deleteKeyframe(selected) }
                     }
                     .labelStyle(.iconOnly)
-                    .keyboardShortcut(.delete, modifiers: [])
-                    .help("Delete this keyframe. Its photos move to the library.")
+                    .keyboardShortcut(.delete, modifiers: .command)
+                    .help("Delete this keyframe (⌘⌫). Its photos move to the library.")
                 }
 
                 AddKeyframeButton()

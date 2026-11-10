@@ -147,12 +147,7 @@ private struct SelectedKeyframeShot: View {
                     ShotTypeMenu(shotType: keyframe.shotType) {
                         appModel.setShotType($0, forKeyframe: keyframe.id)
                     }
-                    TextField("Add shot notes", text: Binding(
-                        get: { keyframe.note },
-                        set: { appModel.setNote($0, forKeyframe: keyframe.id) }
-                    ), axis: .vertical)
-                    .lineLimit(1...3)
-                    .textFieldStyle(.roundedBorder)
+                    ShotNotesField(keyframe: keyframe)
                 }
 
                 CaptureControls(shutterTitle: "Take Photo") {
@@ -215,6 +210,63 @@ private struct SelectedKeyframeShot: View {
     }
 }
 
+/// Shot notes, typed or spoken. While listening, the words appear after what's already
+/// written; switching keyframes stops listening.
+private struct ShotNotesField: View {
+    @Environment(AppModel.self) private var appModel
+    let keyframe: Keyframe
+
+    @State private var dictation = VoiceDictation()
+    /// The note as it was when dictation started; spoken words are added after it.
+    @State private var noteBeforeDictation = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 8) {
+                TextField(dictation.isActive ? "Listening…" : "Add shot notes", text: Binding(
+                    get: { keyframe.note },
+                    set: { appModel.setNote($0, forKeyframe: keyframe.id) }
+                ), axis: .vertical)
+                .lineLimit(1...4)
+                .textFieldStyle(.roundedBorder)
+
+                Button {
+                    toggleDictation()
+                } label: {
+                    Label(dictation.isActive ? "Stop Dictation" : "Dictate Notes",
+                          systemImage: dictation.isActive ? "stop.fill" : "mic.fill")
+                        .symbolEffect(.pulse, isActive: dictation.state == .listening)
+                }
+                .labelStyle(.iconOnly)
+                .buttonBorderShape(.circle)
+                .tint(dictation.isActive ? .red : nil)
+                .help(dictation.isActive ? "Stop dictating" : "Speak your shot notes")
+            }
+
+            if case .failed(let message) = dictation.state {
+                StatusMessage(message, kind: .warning)
+            }
+        }
+        .onChange(of: keyframe.id) { dictation.stop() }
+        .onDisappear { dictation.stop() }
+    }
+
+    private func toggleDictation() {
+        if dictation.isActive {
+            dictation.stop()
+            return
+        }
+        let id = keyframe.id
+        noteBeforeDictation = keyframe.note.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            await dictation.start { spoken in
+                let joined = noteBeforeDictation.isEmpty ? spoken : noteBeforeDictation + " " + spoken
+                appModel.setNote(joined, forKeyframe: id)
+            }
+        }
+    }
+}
+
 /// Picks how a keyframe is framed. Shows the abbreviation once one is chosen.
 struct ShotTypeMenu: View {
     let shotType: ShotType?
@@ -244,6 +296,16 @@ private struct ExportButton: View {
         @Bindable var appModel = appModel
 
         Menu {
+            Section {
+                Button("Export Animatic", systemImage: "video.badge.waveform") {
+                    appModel.exportAnimatic()
+                }
+                .disabled(!appModel.canExportAnimatic)
+            } header: {
+                Text("Animatic Video")
+            } footer: {
+                Text("The animation as film: objects move while the camera glides between your keyframe photos' angles.")
+            }
             Section("Slideshow Video") {
                 Picker("Seconds per Shot", selection: $appModel.slideshowSecondsPerShot) {
                     ForEach([1.0, 1.5, 2, 3, 4, 5], id: \.self) { seconds in
@@ -251,6 +313,7 @@ private struct ExportButton: View {
                     }
                 }
                 Toggle("Crossfade", isOn: $appModel.slideshowCrossfade)
+                Toggle("Shot Captions", isOn: $appModel.slideshowCaptions)
                 Button("Export Slideshow", systemImage: "film") {
                     Task { await appModel.exportSlideshow() }
                 }
@@ -275,7 +338,7 @@ private struct ExportButton: View {
             }
         }
         .disabled(appModel.animator.timeline.keyframes.isEmpty || appModel.isExporting)
-        .help("Export a slideshow video or a printable storyboard sheet")
+        .help("Export an animatic, a slideshow video, or a printable storyboard sheet")
     }
 }
 
@@ -286,7 +349,18 @@ private struct SlideshowExportStatus: View {
     var body: some View {
         let coverage = appModel.slideshowCoverage
 
-        if let error = appModel.exportError {
+        if let progress = appModel.animaticProgress {
+            HStack(spacing: 12) {
+                ProgressView(value: progress)
+                    .frame(maxWidth: .infinity)
+                Text("Rendering animatic · \(Int(progress * 100))%")
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Button("Cancel") { appModel.cancelAnimatic() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+        } else if let error = appModel.exportError {
             StatusMessage(error, kind: .error)
         } else if let file = appModel.exportedFile {
             ShareLink(item: file.url) {

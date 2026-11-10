@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Storyboard 3D listens while you dictate shot notes.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Storyboard 3D turns what you say into shot notes.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Storyboard 3D saves your captured compositions to Photos.</string>
 	<key>NSWorldSensingUsageDescription</key>

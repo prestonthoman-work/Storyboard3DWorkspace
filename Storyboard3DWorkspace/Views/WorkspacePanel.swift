@@ -149,6 +149,12 @@ private struct PanelPage<Content: View>: View {
             .navigationTitle(appModel.projectName)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    if appModel.isGuideHidden {
+                        Button("Show Guide", systemImage: "signpost.right") {
+                            withAnimation(.snappy) { appModel.isGuideHidden = false }
+                        }
+                        .help("Show the step-by-step guide")
+                    }
                     ToggleImmersiveSpaceButton()
                 }
             }

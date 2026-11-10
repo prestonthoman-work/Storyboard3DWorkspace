@@ -224,6 +224,7 @@ struct KeyframeTransport: View {
 
     var body: some View {
         @Bindable var animator = appModel.animator
+        @Bindable var appModel = appModel
 
         HStack(spacing: 10) {
             Button("Previous Keyframe", systemImage: "backward.end.fill") {
@@ -253,6 +254,12 @@ struct KeyframeTransport: View {
             }
             .toggleStyle(.button)
             .help("Play over and over")
+
+            Toggle(isOn: $appModel.showsOnionSkin) {
+                Label("Onion Skin", systemImage: "square.on.square.dashed")
+            }
+            .toggleStyle(.button)
+            .help("Show a faint ghost of the previous keyframe while you edit")
 
             Text(String(format: "%.1f s / %.1f s", animator.playhead, animator.timeline.duration))
                 .font(.callout.monospacedDigit())

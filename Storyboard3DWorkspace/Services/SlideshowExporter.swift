@@ -90,7 +90,7 @@ nonisolated enum SlideshowExporter {
     }
 
     /// Draws one video frame into a fresh pixel buffer and hands it back read-only.
-    private static func makeFrame(pool: CVMutablePixelBuffer.Pool?,
+    static func makeFrame(pool: CVMutablePixelBuffer.Pool?,
                                   attributes: CVPixelBufferCreationAttributes,
                                   draw: (CGContext) -> Void) throws -> CVReadOnlyPixelBuffer {
         let frame: CVMutablePixelBuffer
@@ -121,7 +121,7 @@ nonisolated enum SlideshowExporter {
     }
 
     /// Draws `image` to fill the frame, cropping any excess.
-    private static func draw(_ image: CGImage, in context: CGContext, alpha: CGFloat) {
+    static func draw(_ image: CGImage, in context: CGContext, alpha: CGFloat) {
         let frame = CGSize(width: width, height: height)
         let scale = max(frame.width / CGFloat(image.width), frame.height / CGFloat(image.height))
         let size = CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
@@ -129,5 +129,55 @@ nonisolated enum SlideshowExporter {
         context.setAlpha(alpha)
         context.draw(image, in: CGRect(origin: origin, size: size))
         context.setAlpha(1)
+    }
+}
+
+/// Writes a video one frame at a time, for frames that are rendered as they're needed
+/// (the animatic) instead of all held in memory first. Same size and codec as the slideshow.
+final class VideoStreamWriter {
+    let framesPerSecond: Int32
+    private let writer: AVAssetWriter
+    private let receiver: AVAssetWriterInput.PixelBufferReceiver
+    private let attributes: CVPixelBufferCreationAttributes
+    private var frameIndex: Int64 = 0
+
+    init(url: URL, framesPerSecond: Int32) throws {
+        self.framesPerSecond = framesPerSecond
+        try? FileManager.default.removeItem(at: url)
+        writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: SlideshowExporter.width,
+            AVVideoHeightKey: SlideshowExporter.height
+        ])
+        attributes = CVPixelBufferCreationAttributes(
+            pixelFormatType: CVPixelFormatType(rawValue: kCVPixelFormatType_32BGRA),
+            size: CVImageSize(width: SlideshowExporter.width, height: SlideshowExporter.height)
+        )
+        receiver = writer.inputPixelBufferReceiver(for: input, pixelBufferAttributes: attributes)
+        try writer.start()
+        writer.startSession(atSourceTime: .zero)
+    }
+
+    /// Appends `image` for `count` frames.
+    func append(_ image: CGImage, count: Int = 1) async throws {
+        let frame = try SlideshowExporter.makeFrame(pool: receiver.pixelBufferPool, attributes: attributes) { context in
+            SlideshowExporter.draw(image, in: context, alpha: 1)
+        }
+        for _ in 0..<max(count, 1) {
+            try await receiver.append(frame, with: CMTime(value: frameIndex, timescale: framesPerSecond))
+            frameIndex += 1
+        }
+    }
+
+    func finish() async throws {
+        receiver.finish()
+        await writer.finishWriting()
+        guard writer.status == .completed else { throw SlideshowExporter.ExportError.writerFailed }
+    }
+
+    /// Stops without a usable file.
+    func cancel() {
+        writer.cancelWriting()
     }
 }
