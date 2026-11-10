@@ -20,6 +20,11 @@ extension ModelRecipe {
         }
     }
 
+    /// The library object this was built from, for showing its thumbnail.
+    var catalogKind: SampleObjectCatalog.Kind? {
+        if case .sampleObject(let kind, _) = self { SampleObjectCatalog.Kind(rawValue: kind) } else { nil }
+    }
+
     /// Rebuilds the content a recipe describes. Returns nil if it can't be rebuilt.
     func makeEntity() -> Entity? {
         switch self {

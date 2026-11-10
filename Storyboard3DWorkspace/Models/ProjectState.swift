@@ -37,6 +37,7 @@ struct ProjectState: Codable, Equatable {
         var poses: [ObjectID: CodableTransform]
         /// Optional so projects saved before notes existed still load.
         var note: String?
+        var shotType: ShotType?
     }
 
     struct Photo: Codable, Equatable {
@@ -86,13 +87,14 @@ struct CodableTransform: Codable, Equatable {
 
 extension Keyframe {
     init(_ state: ProjectState.KeyframeState) {
-        self.init(id: state.id, time: state.time, poses: state.poses.mapValues(\.transform), note: state.note ?? "")
+        self.init(id: state.id, time: state.time, poses: state.poses.mapValues(\.transform), note: state.note ?? "",
+                  shotType: state.shotType)
     }
 }
 
 extension ProjectState.KeyframeState {
     init(_ keyframe: Keyframe) {
         self.init(id: keyframe.id, time: keyframe.time, poses: keyframe.poses.mapValues { CodableTransform($0) },
-                  note: keyframe.note.isEmpty ? nil : keyframe.note)
+                  note: keyframe.note.isEmpty ? nil : keyframe.note, shotType: keyframe.shotType)
     }
 }

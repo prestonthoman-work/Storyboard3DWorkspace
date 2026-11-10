@@ -5,29 +5,29 @@
 
 import SwiftUI
 
+/// Free shooting and the photo library: the chosen photo large, every photo below, and the
+/// camera pinned at the bottom.
 struct CapturePanel: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    selectedPhoto
-                        .animation(.smooth(duration: 0.3), value: appModel.selectedLibraryPhoto?.id)
-                    if !appModel.animator.timeline.keyframes.isEmpty {
-                        ShotList()
-                    }
-                    PhotoLibraryGrid()
-                        .animation(.snappy, value: appModel.photos.photos.map(\.id))
-                }
+        VStack(alignment: .leading, spacing: UI.sectionSpacing) {
+            PanelScroll {
+                selectedPhoto
+                    .animation(.smooth(duration: 0.3), value: appModel.selectedLibraryPhoto?.id)
+                PhotoLibraryGrid()
+                    .animation(.snappy, value: appModel.photos.photos.map(\.id))
             }
-            .scrollIndicators(.hidden)
 
-            CaptureTargetLine()
-            CaptureControls {
-                appModel.startCapture()
+            VStack(alignment: .leading, spacing: 10) {
+                CaptureTargetLine()
+                CaptureControls {
+                    appModel.startCapture()
+                }
+                CaptureStatusLine()
             }
-            CaptureStatusLine()
+            .padding(UI.sectionPadding)
+            .platter()
         }
     }
 
@@ -35,67 +35,93 @@ struct CapturePanel: View {
     private var selectedPhoto: some View {
         let photo = appModel.selectedLibraryPhoto
 
-        PhotoFrame(image: photo.flatMap { appModel.photos.image(for: $0) }) {
-            if appModel.isCapturing {
-                ProgressView()
-            } else {
-                Text("Line up your shot in the frame in your view, then capture.")
+        VStack(alignment: .leading, spacing: 8) {
+            PhotoFrame(image: photo.flatMap { appModel.photos.image(for: $0) }) {
+                if appModel.isCapturing {
+                    ProgressView()
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "camera.viewfinder")
+                            .font(.largeTitle.weight(.light))
+                        Text("Line up your shot in the frame in your view, then press the shutter.")
+                            .font(.callout)
+                            .multilineTextAlignment(.center)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding()
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if let photo { photoActions(for: photo) }
+            }
+
+            if let photo {
+                Text(PhotoLibraryGrid.label(for: photo, in: appModel) + " · \(photo.lens.label)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding()
             }
-        }
-
-        if let photo {
-            Text(PhotoLibraryGrid.label(for: photo, in: appModel) + " · \(photo.lens.label)")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 10) {
-                Button {
-                    Task { await appModel.saveSelectedPhotoToPhotos() }
-                } label: {
-                    Label("Save", systemImage: "square.and.arrow.down")
-                }
-                .disabled(appModel.isSavingCapture)
-                .help("Save to your Photos library")
-
-                if let image = appModel.photos.image(for: photo) {
-                    let shareable = Image(uiImage: image)
-                    ShareLink(item: shareable, preview: SharePreview("Storyboard frame", image: shareable)) {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                    }
-                }
-
-                Button("Delete", systemImage: "trash", role: .destructive) {
-                    appModel.deletePhoto(photo)
-                }
-            }
-            .buttonStyle(.bordered)
         }
     }
 
+    /// Save, share, and delete, floating on the photo.
+    private func photoActions(for photo: CapturedPhoto) -> some View {
+        HStack(spacing: 6) {
+            Button("Save to Photos", systemImage: "square.and.arrow.down") {
+                Task { await appModel.saveSelectedPhotoToPhotos() }
+            }
+            .disabled(appModel.isSavingCapture)
+            .help("Save to your Photos library")
+
+            if let image = appModel.photos.image(for: photo) {
+                let shareable = Image(uiImage: image)
+                ShareLink(item: shareable, preview: SharePreview("Storyboard frame", image: shareable)) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+            }
+
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                appModel.deletePhoto(photo)
+            }
+        }
+        .labelStyle(.iconOnly)
+        .buttonBorderShape(.circle)
+        .padding(4)
+        .glassBackgroundEffect(in: Capsule())
+        .padding(10)
+    }
 }
 
-/// Before shooting: says whether the photo will attach to a keyframe.
+/// Before shooting: where the photo will go, and a menu to send it to a keyframe instead.
 private struct CaptureTargetLine: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        Group {
+        let keyframes = appModel.animator.timeline.keyframes
+
+        HStack(spacing: 10) {
             if let target = appModel.captureTarget {
-                Label("Photos will attach to keyframe \(target.number).", systemImage: "film")
-            } else if appModel.animator.timeline.keyframes.isEmpty {
-                Label("Photos go to the library. Add keyframes in Animate to build a storyboard.",
-                      systemImage: "photo.on.rectangle")
+                StatusMessage("Attaches to keyframe \(target.number)", symbol: "diamond.fill")
             } else {
-                Label("The scene isn't at a keyframe, so photos go to the library only. Select a keyframe in Animate to attach them.",
-                      systemImage: "photo.on.rectangle")
+                StatusMessage("Goes to the library", symbol: "photo.on.rectangle")
+            }
+            if !keyframes.isEmpty {
+                Menu {
+                    ForEach(Array(keyframes.enumerated()), id: \.element.id) { index, keyframe in
+                        Button {
+                            appModel.selectKeyframe(keyframe)
+                        } label: {
+                            Label("Keyframe \(index + 1)" + (keyframe.shotType.map { "  ·  \($0.abbreviation)" } ?? ""),
+                                  systemImage: appModel.photos.primaryPhoto(for: keyframe.id) == nil ? "diamond" : "checkmark.diamond.fill")
+                        }
+                    }
+                } label: {
+                    Label("Attach To", systemImage: "diamond")
+                }
+                .controlSize(.small)
+                .fixedSize()
+                .help("Pose the scene at a keyframe so the next photo attaches to it")
             }
         }
-        .font(.footnote)
-        .foregroundStyle(.secondary)
     }
 }
 
@@ -103,21 +129,21 @@ private struct CaptureTargetLine: View {
 private struct PhotoLibraryGrid: View {
     @Environment(AppModel.self) private var appModel
 
-    private let columns = [GridItem(.adaptive(minimum: 120), spacing: 10)]
+    private let columns = [GridItem(.adaptive(minimum: 148), spacing: 12)]
 
     var body: some View {
         let photos = Array(appModel.photos.photos.reversed())
         if !photos.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Library (\(photos.count))")
-                    .font(.headline)
+            PanelSection("Library", symbol: "photo.stack") {
+                Text("\(photos.count)").monospacedDigit().foregroundStyle(.secondary)
+            } content: {
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                     ForEach(photos) { photo in
                         VStack(alignment: .leading, spacing: 4) {
                             PhotoThumbnail(photo: photo,
                                            isSelected: photo.id == appModel.selectedLibraryPhoto?.id,
                                            isPrimary: appModel.photos.isPrimary(photo),
-                                           width: 120) {
+                                           width: 148) {
                                 appModel.selectedLibraryPhotoID = photo.id
                             }
                             Text(Self.label(for: photo, in: appModel))

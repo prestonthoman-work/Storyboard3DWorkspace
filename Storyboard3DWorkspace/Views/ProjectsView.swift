@@ -14,20 +14,48 @@ struct ProjectsView: View {
     @State private var renaming: ProjectStore.Info?
     @State private var newName = ""
     @State private var deleting: ProjectStore.Info?
+    @State private var isChoosingStarter = false
+    @State private var showsWelcome = !UserDefaults.standard.bool(forKey: "hasSeenWelcome")
 
     var body: some View {
+        if showsWelcome {
+            WelcomeView(start: { starter in
+                finishWelcome()
+                begin(starter)
+            }, dismiss: finishWelcome)
+            .transition(.opacity)
+        } else {
+            projectList
+        }
+    }
+
+    private func finishWelcome() {
+        UserDefaults.standard.set(true, forKey: "hasSeenWelcome")
+        withAnimation(.smooth) { showsWelcome = false }
+    }
+
+    /// Creates a project from a starter and steps into it.
+    private func begin(_ starter: StarterScene) {
+        isChoosingStarter = false
+        Task {
+            await appModel.createProject(from: starter)
+            await enterWorkspace()
+        }
+    }
+
+    private var projectList: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
 
             if let error = appModel.projectError {
-                Text(error).font(.callout).foregroundStyle(.red)
+                StatusMessage(error, kind: .error)
             }
 
             if appModel.projects.isEmpty {
                 emptyState
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 14) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
                         ForEach(appModel.projects) { project in
                             card(for: project)
                                 .transition(.scale(scale: 0.96).combined(with: .opacity))
@@ -40,7 +68,7 @@ struct ProjectsView: View {
                 .scrollClipDisabled()
             }
         }
-        .padding(28)
+        .padding(26)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task(id: appModel.projects) {
             covers = Dictionary(uniqueKeysWithValues: appModel.projects.compactMap { project in
@@ -64,54 +92,63 @@ struct ProjectsView: View {
         } message: {
             Text("Its scene, keyframes, and photos will be removed. This can't be undone.")
         }
+        .sheet(isPresented: $isChoosingStarter) {
+            NavigationStack {
+                StarterPicker(action: begin)
+                    .padding(26)
+                    .navigationTitle("New Project")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { isChoosingStarter = false }
+                        }
+                    }
+            }
+            .frame(width: 520, height: 460)
+        }
     }
 
     private var header: some View {
         HStack(alignment: .bottom, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Storyboard 3D")
-                    .font(.extraLargeTitle2)
+                    .font(.largeTitle.weight(.bold))
                 Text("Stage scenes on your table. Frame every shot.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
+            Button("Tour", systemImage: "questionmark") {
+                appModel.isGuideHidden = false
+                withAnimation(.smooth) { showsWelcome = true }
+            }
+            .labelStyle(.iconOnly)
+            .buttonBorderShape(.circle)
+            .help("Replay the welcome tour and turn the step-by-step guide back on")
             Button {
-                Task {
-                    await appModel.createProject()
-                    await enterWorkspace()
-                }
+                isChoosingStarter = true
             } label: {
-                Label("New", systemImage: "plus")
+                Label("New Project", systemImage: "plus")
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.large)
             .disabled(appModel.immersiveSpaceState != .closed)
-            .help("Start a new project")
+            .help("Start a new project, blank or from a ready-made set")
         }
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
-            Spacer()
-            ZStack {
-                Circle()
-                    .fill(LinearGradient(colors: [.white.opacity(0.16), .white.opacity(0.04)],
-                                         startPoint: .top, endPoint: .bottom))
-                    .frame(width: 120, height: 120)
-                Image(systemName: "film.stack")
-                    .font(.system(size: 46, weight: .light))
-                    .symbolEffect(.pulse, options: .repeat(2))
+        EmptyState(symbol: "film.stack",
+                   title: "Your first storyboard",
+                   message: "Build a small set on a real table, light it, and photograph each shot from any angle.") {
+            Button {
+                isChoosingStarter = true
+            } label: {
+                Label("Start a Project", systemImage: "plus")
             }
-            Text("Your first storyboard")
-                .font(.title2.weight(.semibold))
-            Text("Build a small set on a real table, light it, and photograph each shot from any angle.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 340)
-            Spacer()
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .disabled(appModel.immersiveSpaceState != .closed)
         }
-        .frame(maxWidth: .infinity)
     }
 
     /// A large cover card: the project's best photo, its name over a soft shadow, and
@@ -133,21 +170,21 @@ struct ProjectsView: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(project.name)
-                        .font(.title3.weight(.semibold))
+                        .font(.headline)
                         .lineLimit(1)
                     Text(subtitle(for: project))
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.75))
                 }
                 .foregroundStyle(.white)
-                .padding(18)
+                .padding(14)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 24))
+            .clipShape(RoundedRectangle(cornerRadius: UI.corner, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 24)
+                RoundedRectangle(cornerRadius: UI.corner, style: .continuous)
                     .strokeBorder(.white.opacity(0.12), lineWidth: 1)
             }
-            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 24))
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: UI.corner, style: .continuous))
         }
         .buttonStyle(.plain)
         .hoverEffect()
@@ -169,7 +206,8 @@ struct ProjectsView: View {
                     .labelStyle(.iconOnly)
             }
             .buttonBorderShape(.circle)
-            .padding(12)
+            .controlSize(.small)
+            .padding(8)
             .accessibilityLabel("Options for \(project.name)")
         }
     }
@@ -199,7 +237,7 @@ struct ProjectsView: View {
     private func subtitle(for project: ProjectStore.Info) -> String {
         let edited = "Edited \(project.modified.formatted(.relative(presentation: .named)))"
         guard let shots = project.shotCount, shots > 0 else { return edited }
-        return "\(shots) shot\(shots == 1 ? "" : "s")  ·  \(edited)"
+        return "\(shots) shot\(shots == 1 ? "" : "s") · \(edited)"
     }
 
     /// Opens the immersive workspace for the project that was just loaded.
@@ -221,5 +259,5 @@ struct ProjectsView: View {
 #Preview(windowStyle: .automatic) {
     ProjectsView()
         .environment(AppModel())
-        .frame(width: 500, height: 680)
+        .frame(width: UI.panelSize.width, height: UI.panelSize.height)
 }

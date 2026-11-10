@@ -16,7 +16,7 @@ struct CaptureControls: View {
     var body: some View {
         @Bindable var appModel = appModel
 
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Menu {
                 Picker("Lighting", selection: $appModel.captureLighting) {
                     ForEach(LightingPreset.allCases) { preset in
@@ -52,8 +52,12 @@ struct CaptureControls: View {
             Spacer(minLength: 0)
 
             if let remaining = appModel.captureCountdown {
-                Button("Cancel (\(remaining))", systemImage: "xmark") {
+                Button {
                     appModel.cancelCapture()
+                } label: {
+                    Label("Cancel \(remaining)", systemImage: "xmark")
+                        .monospacedDigit()
+                        .contentTransition(.numericText(countsDown: true))
                 }
                 .buttonStyle(.bordered)
             } else {
@@ -88,25 +92,15 @@ struct CaptureStatusLine: View {
     private var status: some View {
         switch appModel.captureStatus {
         case .attached(let number):
-            Label("Added to keyframe \(number).", systemImage: "checkmark.circle.fill")
-                .font(.callout)
-                .foregroundStyle(.green)
+            StatusMessage("Added to keyframe \(number)", kind: .success)
         case .retaken(let number):
-            Label("Retook the photo for keyframe \(number) from the same angle.", systemImage: "checkmark.circle.fill")
-                .font(.callout)
-                .foregroundStyle(.green)
+            StatusMessage("Retook keyframe \(number)'s photo from the same angle", kind: .success)
         case .libraryOnly:
-            Label("Saved to the library. It isn't attached to a keyframe.", systemImage: "photo.on.rectangle")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            StatusMessage("Saved to the library", symbol: "photo.on.rectangle")
         case .saved:
-            Label("Saved to Photos", systemImage: "checkmark.circle.fill")
-                .font(.callout)
-                .foregroundStyle(.green)
+            StatusMessage("Saved to Photos", kind: .success)
         case .failed(let message):
-            Text(message)
-                .font(.callout)
-                .foregroundStyle(.red)
+            StatusMessage(message, kind: .error)
         case nil:
             EmptyView()
         }

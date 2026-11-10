@@ -5,88 +5,91 @@
 
 import SwiftUI
 
-/// Keyframes and their photos together: the selected keyframe's photo up top, a camera
-/// to shoot it, the timeline, and a storyboard of every keyframe's primary photo.
+/// Keyframes and their photos together: the timeline up top, the selected keyframe's
+/// photo and notes with a camera to shoot it, and the storyboard of every keyframe.
 struct AnimatePanel: View {
     @Environment(AppModel.self) private var appModel
 
     private var animator: KeyframeAnimator { appModel.animator }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if animator.timeline.keyframes.isEmpty {
-                        Text("Add a keyframe to start, even with nothing on the base. Changes you make save to the selected keyframe automatically, so add a new keyframe whenever you want a new pose. Playback moves everything smoothly between keyframes, and each keyframe can hold photos for your storyboard.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: UI.sectionSpacing) {
+            if animator.timeline.keyframes.isEmpty {
+                EmptyState(symbol: "diamond",
+                           title: "No keyframes yet",
+                           message: "Arrange the scene, then add a keyframe to save it as your first shot. Move things and add another, and playback glides between them.") {
+                    HStack(spacing: 12) {
+                        AddKeyframeButton(title: "Add First Keyframe")
+                            .controlSize(.large)
+                        TimelineWindowButton()
+                    }
+                }
+            } else {
+                // With the Timeline window open, the panel focuses on the selected keyframe
+                // instead of repeating the track and storyboard shown there.
+                PanelScroll {
+                    if appModel.isTimelineWindowOpen {
+                        KeyframeStatusLine()
+                            .padding(.horizontal, 4)
                     } else {
-                        SelectedKeyframeShot()
-                        transport
+                        TimelineSection()
+                    }
+                    SelectedKeyframeShot()
+                    if !appModel.isTimelineWindowOpen {
                         ShotList()
                     }
                 }
-            }
-            .scrollIndicators(.hidden)
+                .animation(.smooth, value: appModel.isTimelineWindowOpen)
 
-            editActions
-            SlideshowExportStatus()
-        }
-    }
-
-    private var transport: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 14) {
-                Button {
-                    animator.togglePlayback()
-                } label: {
-                    Label(animator.isPlaying ? "Pause" : "Play",
-                          systemImage: animator.isPlaying ? "pause.fill" : "play.fill")
-                        .labelStyle(.iconOnly)
+                ActionBar {
+                    AddKeyframeButton()
+                    Spacer(minLength: 0)
+                    ExportButton()
                 }
-                .buttonBorderShape(.circle)
-                .disabled(!animator.timeline.canPlay)
-                .help("Play the animation. Needs at least two keyframes.")
-
-                Text(String(format: "%.1f s / %.1f s", animator.playhead, animator.timeline.duration))
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
-            TimelineTrack(
-                duration: animator.timeline.duration,
-                playhead: animator.playhead,
-                keyframes: animator.timeline.keyframes,
-                selectedKeyframeID: animator.selectedKeyframeID,
-                onScrub: appModel.scrubTimeline(to:)
-            )
-        }
-    }
-
-    private var editActions: some View {
-        HStack(spacing: 12) {
-            Button {
-                appModel.addKeyframe()
-            } label: {
-                Label("Add Keyframe", systemImage: "plus")
-            }
-            .buttonStyle(.borderedProminent)
-            .help("Copy the current scene into a new keyframe and select it")
-
-            ExportButton()
-
-            if animator.selectedKeyframe != nil {
-                Button("Delete Keyframe", systemImage: "trash", role: .destructive) {
-                    appModel.deleteSelectedKeyframe()
-                }
-                .labelStyle(.iconOnly)
+                SlideshowExportStatus()
             }
         }
-        .buttonStyle(.bordered)
     }
 }
 
-/// The selected keyframe: its photo, its other photos, and a camera to take more.
+/// Opens the large timeline window, or shows that it's already open.
+struct TimelineWindowButton: View {
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button {
+            openWindow(id: TimelineWindow.windowID)
+        } label: {
+            Label(appModel.isTimelineWindowOpen ? "Timeline Open" : "Open Timeline",
+                  systemImage: "rectangle.expand.vertical")
+        }
+        .buttonStyle(.bordered)
+        .disabled(appModel.isTimelineWindowOpen)
+        .help("Open the large timeline window")
+    }
+}
+
+/// Transport, a compact track, and what an edit will do right now.
+private struct TimelineSection: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                KeyframeTransport()
+                Spacer(minLength: 8)
+                TimelineWindowButton()
+                    .labelStyle(.iconOnly)
+                    .buttonBorderShape(.circle)
+            }
+            TimelineTrack()
+            KeyframeStatusLine()
+        }
+        .padding(UI.sectionPadding)
+        .platter()
+    }
+}
+
+/// The selected keyframe: its photo, its other photos, notes, and a camera to take more.
 private struct SelectedKeyframeShot: View {
     @Environment(AppModel.self) private var appModel
 
@@ -96,98 +99,140 @@ private struct SelectedKeyframeShot: View {
             let keyframePhotos = appModel.photos.photos(for: keyframe.id)
             let focused = appModel.focusedKeyframePhoto
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Keyframe \(number)")
-                        .font(.headline)
-                    Spacer()
-                    if focused?.camera != nil {
-                        Button {
-                            Task { await appModel.retakeFocusedPhoto() }
-                        } label: {
-                            Label("Retake", systemImage: "arrow.triangle.2.circlepath.camera")
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!appModel.canRetakeFocusedPhoto)
-                        .help("Shoot this photo again from the same spot with the current lens and lighting")
-                    }
-                    if let focused {
-                        if appModel.photos.isPrimary(focused) {
-                            Label("Primary", systemImage: "star.fill")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Button("Make Primary", systemImage: "star") {
-                                appModel.setPrimaryPhoto(focused)
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
-                }
-
+            PanelSection("Keyframe \(number)", symbol: "diamond.fill") {
+                Text(keyframe.time.formatted(.number.precision(.fractionLength(1))) + " s")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            } content: {
                 PhotoFrame(image: focused.flatMap { appModel.photos.image(for: $0) }) {
                     if appModel.isCapturing {
                         ProgressView()
                     } else {
-                        Text("No photo yet. Frame the shot in your view, then take a photo.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding()
+                        VStack(spacing: 8) {
+                            Image(systemName: "camera.viewfinder")
+                                .font(.largeTitle.weight(.light))
+                            Text("Frame the shot in your view, then take a photo.")
+                                .font(.callout)
+                                .multilineTextAlignment(.center)
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding()
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    if let focused { photoActions(for: focused) }
+                }
+                .overlay {
+                    if appModel.isUpdatingPhotos {
+                        ProgressView("Updating photos…")
+                            .padding(14)
+                            .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: UI.smallCorner))
                     }
                 }
 
                 if keyframePhotos.count > 1 {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 8) {
-                            ForEach(keyframePhotos) { photo in
-                                PhotoThumbnail(photo: photo,
-                                               isSelected: photo.id == focused?.id,
-                                               isPrimary: appModel.photos.isPrimary(photo),
-                                               width: 80) {
-                                    appModel.focusedKeyframePhotoID = photo.id
-                                }
+                    HorizontalStrip(spacing: 8) {
+                        ForEach(keyframePhotos) { photo in
+                            PhotoThumbnail(photo: photo,
+                                           isSelected: photo.id == focused?.id,
+                                           isPrimary: appModel.photos.isPrimary(photo),
+                                           width: 84) {
+                                appModel.focusedKeyframePhotoID = photo.id
                             }
                         }
                     }
-                    .scrollIndicators(.hidden)
                 }
 
-                TextField("Shot notes", text: Binding(
-                    get: { keyframe.note },
-                    set: { appModel.setNote($0, forKeyframe: keyframe.id) }
-                ), axis: .vertical)
-                .lineLimit(1...3)
-                .textFieldStyle(.roundedBorder)
+                HStack(alignment: .top, spacing: 10) {
+                    ShotTypeMenu(shotType: keyframe.shotType) {
+                        appModel.setShotType($0, forKeyframe: keyframe.id)
+                    }
+                    TextField("Add shot notes", text: Binding(
+                        get: { keyframe.note },
+                        set: { appModel.setNote($0, forKeyframe: keyframe.id) }
+                    ), axis: .vertical)
+                    .lineLimit(1...3)
+                    .textFieldStyle(.roundedBorder)
+                }
 
                 CaptureControls(shutterTitle: "Take Photo") {
                     appModel.takePhotoForSelectedKeyframe()
                 }
                 CaptureStatusLine()
 
-                if appModel.isUpdatingPhotos {
-                    Label("Updating photos…", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                } else if let notice = appModel.keyframeNotice {
-                    Label(notice, systemImage: "photo.on.rectangle")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                if let notice = appModel.keyframeNotice, !appModel.isUpdatingPhotos {
+                    StatusMessage(notice, symbol: "photo.on.rectangle")
                 }
-                Label("Changes to the scene save to keyframe \(number) automatically.", systemImage: "checkmark.circle")
-                    .font(.footnote)
-                    .foregroundStyle(.tertiary)
 
                 @Bindable var appModel = appModel
-                Toggle("Update photos when a keyframe changes", isOn: $appModel.keepPhotosInSync)
+                Toggle("Re-shoot photos when this keyframe changes", isOn: $appModel.keepPhotosInSync)
                     .font(.footnote)
+                    .foregroundStyle(.secondary)
                     .help("Re-render a keyframe's photos from their saved angles when you change it. Off: they move to the library.")
             }
         } else {
-            Text("No keyframe is selected, so changes aren't being saved to one. Select a keyframe below, or add a new one.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Image(systemName: "hand.tap")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                Text("Tap a diamond or a shot to edit that keyframe and take its photo.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(UI.sectionPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .platter()
         }
+    }
+
+    /// Primary and retake controls floating on the photo.
+    private func photoActions(for photo: CapturedPhoto) -> some View {
+        HStack(spacing: 6) {
+            if photo.camera != nil {
+                Button("Retake", systemImage: "arrow.triangle.2.circlepath.camera") {
+                    Task { await appModel.retakeFocusedPhoto() }
+                }
+                .disabled(!appModel.canRetakeFocusedPhoto)
+                .help("Shoot this photo again from the same spot with the current lens and lighting")
+            }
+            if appModel.photos.isPrimary(photo) {
+                Label("Primary", systemImage: "star.fill")
+                    .foregroundStyle(.yellow)
+                    .padding(10)
+                    .help("This photo represents the keyframe in the storyboard")
+            } else {
+                Button("Make Primary", systemImage: "star") {
+                    appModel.setPrimaryPhoto(photo)
+                }
+                .help("Use this photo for the keyframe in the storyboard")
+            }
+        }
+        .labelStyle(.iconOnly)
+        .buttonBorderShape(.circle)
+        .padding(4)
+        .glassBackgroundEffect(in: Capsule())
+        .padding(10)
+    }
+}
+
+/// Picks how a keyframe is framed. Shows the abbreviation once one is chosen.
+struct ShotTypeMenu: View {
+    let shotType: ShotType?
+    let choose: (ShotType?) -> Void
+
+    var body: some View {
+        Menu {
+            Picker("Shot Type", selection: Binding(get: { shotType }, set: choose)) {
+                Text("None").tag(ShotType?.none)
+                ForEach(ShotType.allCases) { type in
+                    Label("\(type.name)  (\(type.abbreviation))", systemImage: type.symbol).tag(ShotType?.some(type))
+                }
+            }
+        } label: {
+            Label(shotType?.abbreviation ?? "Shot", systemImage: shotType?.symbol ?? "camera.metering.center.weighted")
+                .monospaced()
+        }
+        .help("How this shot is framed, printed on the storyboard")
     }
 }
 
@@ -234,30 +279,24 @@ private struct ExportButton: View {
     }
 }
 
-/// After exporting: a way to share the file. Before: what each export contains.
+/// After exporting: a way to share the file, or what went wrong.
 private struct SlideshowExportStatus: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
         let coverage = appModel.slideshowCoverage
 
-        VStack(alignment: .leading, spacing: 8) {
-            if let file = appModel.exportedFile {
-                ShareLink(item: file.url) {
-                    Label(file.shareTitle, systemImage: "square.and.arrow.up")
-                }
-                .buttonStyle(.bordered)
+        if let error = appModel.exportError {
+            StatusMessage(error, kind: .error)
+        } else if let file = appModel.exportedFile {
+            ShareLink(item: file.url) {
+                Label(file.shareTitle, systemImage: "square.and.arrow.up")
             }
-
-            if let error = appModel.exportError {
-                Text(error).font(.footnote).foregroundStyle(.red)
-            } else if coverage.total > 0 {
-                Text(coverage.withPhoto == coverage.total
-                     ? "Export a slideshow of each keyframe's primary photo, or a printable sheet with your notes."
-                     : "Export a slideshow of each keyframe's primary photo, or a printable sheet with your notes. \(coverage.withPhoto) of \(coverage.total) keyframes have a photo; the slideshow skips the rest.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
+            .buttonStyle(.bordered)
+        } else if coverage.total > 0, coverage.withPhoto < coverage.total {
+            Text("\(coverage.withPhoto) of \(coverage.total) keyframes have a photo. Exports skip the rest.")
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
         }
     }
 }

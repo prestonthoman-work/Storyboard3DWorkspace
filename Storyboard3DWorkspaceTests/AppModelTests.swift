@@ -142,6 +142,146 @@ struct AppModelTests {
         #expect(app.keyframeMembership(of: id) == "Keyframe 2")
     }
 
+    // MARK: Keyframe editing
+
+    @Test func editingBetweenKeyframesAddsOneThere() async throws {
+        let app = try await makeApp()
+        let (id, entity) = try await addObject("house", to: app)
+        app.addKeyframe()
+        try await move(entity, by: 0.2, in: app)
+        app.addKeyframe()
+        #expect(app.animator.timeline.keyframes.count == 2)
+
+        app.scrubTimeline(to: 0.5)
+        #expect(app.animator.selectedKeyframeID == nil)
+        try await move(entity, by: 0.05, in: app)
+
+        let keyframes = app.animator.timeline.keyframes
+        #expect(keyframes.count == 3)
+        #expect(abs(keyframes[1].time - 0.5) < 1e-9)
+        #expect(app.animator.selectedKeyframeID == keyframes[1].id)
+        #expect(keyframes[1].poses[id] != nil)
+
+        app.undo()
+        #expect(app.animator.timeline.keyframes.count == 2)
+    }
+
+    @Test func addKeyframeGoesAfterTheSelectedOne() async throws {
+        let app = try await makeApp()
+        app.addKeyframe()
+        app.addKeyframe()
+        let first = app.animator.timeline.keyframes[0]
+        app.selectKeyframe(first)
+        app.addKeyframe()
+        let keyframes = app.animator.timeline.keyframes
+        #expect(keyframes.count == 3)
+        #expect(keyframes[0].id == first.id)
+        #expect(app.animator.selectedKeyframeID == keyframes[1].id)
+        #expect(keyframes.map(\.time) == [0, 1, 2])
+    }
+
+    @Test func deletingSelectsTheNeighbor() async throws {
+        let app = try await makeApp()
+        app.addKeyframe()
+        app.addKeyframe()
+        app.addKeyframe()
+        let keyframes = app.animator.timeline.keyframes
+        app.selectKeyframe(keyframes[2])
+        app.deleteSelectedKeyframe()
+        #expect(app.animator.selectedKeyframeID == keyframes[1].id)
+        app.undo()
+        #expect(app.animator.timeline.keyframes.count == 3)
+    }
+
+    @Test func retimeDragUndoesInOneStep() async throws {
+        let app = try await makeApp()
+        app.addKeyframe()
+        app.addKeyframe()
+        let second = app.animator.timeline.keyframes[1].id
+        app.beginRetimingKeyframe()
+        app.retimeKeyframe(second, to: 1.5)
+        app.retimeKeyframe(second, to: 2.2)
+        app.endRetimingKeyframe()
+        #expect(abs(app.animator.timeline.duration - 2.2) < 1e-9)
+        app.undo()
+        #expect(app.animator.timeline.duration == 1)
+    }
+
+    // MARK: Naming
+
+    @Test func repeatedObjectsGetNumberedNames() async throws {
+        let app = try await makeApp()
+        app.placeCatalogObject(.tree)
+        app.placeCatalogObject(.tree)
+        app.duplicateSelectedObject()
+        #expect(app.objects.map(\.name) == ["Tree", "Tree 2", "Tree 3"])
+
+        app.recolorSelectedObject("red")
+        #expect(app.selectedObject?.name == "Red Tree")
+        app.renameObject(try #require(app.selectedObjectID), to: "Hero Tree")
+        app.recolorSelectedObject("blue")
+        #expect(app.selectedObject?.name == "Hero Tree")   // custom names are kept
+    }
+
+    @Test func automaticNamesAreRecognized() {
+        #expect(AppModel.isAutomaticName("Red House", for: "Red House"))
+        #expect(AppModel.isAutomaticName("Red House 4", for: "Red House"))
+        #expect(!AppModel.isAutomaticName("Grandma's House", for: "Red House"))
+        #expect(AppModel.nameStem("Tree 12") == "Tree")
+        #expect(AppModel.nameStem("Route 66 Diner") == "Route 66 Diner")
+    }
+
+    // MARK: Starters and the guide
+
+    @Test func animatedStarterComesReadyToPlay() async throws {
+        let app = AppModel()
+        await app.createProject(from: .streetCorner)
+        #expect(app.objects.count == StarterScene.streetCorner.placements.count)
+        #expect(app.objects.contains { $0.name == "Hero Car" })
+        let keyframes = app.animator.timeline.keyframes
+        #expect(keyframes.count == 2)
+        #expect(keyframes.map(\.shotType) == [.establishing, .wide])
+        let car = try #require(app.objects.first { $0.name == "Hero Car" }?.id)
+        let start = try #require(keyframes[0].poses[car]?.translation.x)
+        let end = try #require(keyframes[1].poses[car]?.translation.x)
+        #expect(end - start > 0.25)
+        #expect(!app.canUndo)
+        #expect(app.workflowStep == .takePhotos)
+    }
+
+    @Test func guideFollowsProgress() async throws {
+        let app = try await makeApp()
+        #expect(app.workflowStep == .addObjects)
+        app.placeCatalogObject(.rock)
+        #expect(app.workflowStep == .firstKeyframe)
+        app.addKeyframe()
+        #expect(app.workflowStep == .secondKeyframe)
+        app.addKeyframe()
+        #expect(app.workflowStep == .takePhotos)
+        for keyframe in app.animator.timeline.keyframes {
+            app.photos.add(solidImage(), lens: .normal, keyframe: keyframe.id)
+        }
+        #expect(app.workflowStep == .share)
+    }
+
+    @Test func shotTypesSaveAndUndo() async throws {
+        let app = try await makeApp()
+        app.addKeyframe()
+        let id = try #require(app.animator.selectedKeyframeID)
+        app.setShotType(.closeUp, forKeyframe: id)
+        #expect(app.currentState().keyframes.first?.shotType == .closeUp)
+
+        let data = try JSONEncoder().encode(app.currentState())
+        let decoded = try JSONDecoder().decode(ProjectState.self, from: data)
+        #expect(Keyframe(decoded.keyframes[0]).shotType == .closeUp)
+
+        app.duplicateKeyframe(id)
+        #expect(app.animator.timeline.keyframes.last?.shotType == .closeUp)
+        app.undo()
+        app.undo()
+        #expect(app.animator.timeline.keyframe(id)?.shotType == nil)
+    }
+
     // MARK: Photos follow their keyframes
 
     @Test func changingAKeyframeRerendersItsPhotosFromTheSavedAngle() async throws {

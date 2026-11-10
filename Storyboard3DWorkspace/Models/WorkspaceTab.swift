@@ -5,11 +5,13 @@
 
 import Foundation
 
-/// The workflow steps shown as tabs in the control panel.
+/// The workflow steps shown as tabs in the control panel, in the order you'd use them.
 enum WorkspaceTab: Hashable {
-    case base
+    /// The base and the backdrop behind it.
+    case set
     case objects
-    case background
+    /// Keyframes, and each keyframe's photos.
     case animate
-    case capture
+    /// Free shooting and the photo library.
+    case photos
 }

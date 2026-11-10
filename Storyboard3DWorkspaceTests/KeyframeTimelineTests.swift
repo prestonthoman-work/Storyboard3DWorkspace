@@ -84,4 +84,89 @@ struct KeyframeTimelineTests {
         timeline.update(keyframe.id, with: [house: at(0)])
         #expect(timeline.keyframe(keyframe.id)?.note == "Wide shot")
     }
+
+    // MARK: Timing
+
+    @Test func insertingAfterAKeyframeKeepsLaterTiming() throws {
+        var timeline = KeyframeTimeline()
+        let first = timeline.append([:])
+        timeline.append([:])
+        timeline.retime(timeline.keyframes[1].id, to: 2.5)
+        let maybeInserted = timeline.insert([house: at(0)], after: first.id)
+        let inserted = try #require(maybeInserted)
+        #expect(timeline.keyframes.map(\.time) == [0, 1, 3.5])
+        #expect(timeline.keyframes[1].id == inserted.id)
+    }
+
+    @Test func insertingAtAMomentLeavesOthersInPlace() throws {
+        var timeline = KeyframeTimeline()
+        timeline.append([:])
+        timeline.append([:])
+        let maybeInserted = timeline.insert([:], at: 0.4)
+        let inserted = try #require(maybeInserted)
+        #expect(timeline.keyframes.map(\.time) == [0, 0.4, 1])
+        #expect(timeline.keyframes[1].id == inserted.id)
+        let tooClose = timeline.insert([:], at: 0.42)
+        let pastEnd = timeline.insert([:], at: 5)
+        #expect(tooClose == nil)
+        #expect(pastEnd == nil)
+    }
+
+    @Test func retimingSnapsAndStaysBetweenNeighbors() {
+        var timeline = KeyframeTimeline()
+        let first = timeline.append([:])
+        let second = timeline.append([:])
+        let third = timeline.append([:])
+        let movedFirst = timeline.retime(first.id, to: 0.5)
+        #expect(!movedFirst)                                          // the first stays at 0
+        timeline.retime(second.id, to: 1.33)
+        #expect(abs(timeline.keyframe(second.id)!.time - 1.3) < 1e-9)  // snapped to 0.1 s
+        timeline.retime(second.id, to: 9)
+        #expect(abs(timeline.keyframe(second.id)!.time - (2 - KeyframeTimeline.minimumGap)) < 1e-9)
+        timeline.retime(third.id, to: 4)
+        #expect(timeline.duration == 4)
+    }
+
+    @Test func deletingClosesOnlyTheRemovedGap() {
+        var timeline = KeyframeTimeline()
+        timeline.append([:])
+        let second = timeline.append([:])
+        let third = timeline.append([:])
+        timeline.append([:])
+        timeline.retime(third.id, to: 2.5)            // times: 0, 1, 2.5, 3
+        timeline.remove(second.id)                    // its 1.5 s gap closes
+        #expect(timeline.keyframes.map(\.time) == [0, 1, 1.5])
+    }
+
+    @Test func reorderingKeepsTheMoments() {
+        var timeline = KeyframeTimeline()
+        let a = timeline.append([:])
+        let b = timeline.append([:])
+        timeline.retime(b.id, to: 3)
+        timeline.move(b.id, to: 0)
+        #expect(timeline.keyframes.map(\.id) == [b.id, a.id])
+        #expect(timeline.keyframes.map(\.time) == [0, 3])
+    }
+
+    @Test func duplicateCopiesPosesAndNotes() throws {
+        var timeline = KeyframeTimeline()
+        let original = timeline.append([house: at(0.3)])
+        timeline.setNote("Close-up", for: original.id)
+        let maybeCopy = timeline.duplicate(original.id)
+        let copy = try #require(maybeCopy)
+        #expect(copy.id != original.id)
+        #expect(copy.note == "Close-up")
+        #expect(copy.poses[house]?.translation.x == 0.3)
+        #expect(timeline.keyframes.map(\.time) == [0, 1])
+    }
+
+    @Test func steppingFindsNeighbors() {
+        var timeline = KeyframeTimeline()
+        let a = timeline.append([:])
+        let b = timeline.append([:])
+        #expect(timeline.keyframe(after: 0)?.id == b.id)
+        #expect(timeline.keyframe(before: 0.5)?.id == a.id)
+        #expect(timeline.keyframe(before: 0) == nil)
+        #expect(timeline.keyframe(after: 1) == nil)
+    }
 }

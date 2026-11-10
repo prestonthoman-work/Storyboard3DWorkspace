@@ -13,67 +13,47 @@ struct ObjectsPanel: View {
     var body: some View {
         @Bindable var appModel = appModel
 
-        VStack(alignment: .leading, spacing: 16) {
-          ScrollView {
-           VStack(alignment: .leading, spacing: 16) {
-            CatalogTray()
+        VStack(alignment: .leading, spacing: UI.sectionSpacing) {
+            PanelScroll {
+                    PanelSection("Add", symbol: "plus.square.on.square") {
+                        if appModel.isSampleMode {
+                            Badge(text: "Sample objects", symbol: "shippingbox")
+                                .help("No AI service is set up, so prompts are matched to built-in objects.")
+                        }
+                    } content: {
+                        CatalogTray()
+                        PromptField(placeholder: "Or describe one, like a red house",
+                                    text: $appModel.objectPrompt,
+                                    isWorking: appModel.isGeneratingObject,
+                                    canSubmit: appModel.canGenerateObject) {
+                            Task { await appModel.generateObject() }
+                        }
+                        if let error = appModel.objectError {
+                            StatusMessage(error, kind: .error)
+                        } else if let note = appModel.objectNote {
+                            StatusMessage(note)
+                        }
+                    }
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 10) {
-                    TextField("Or describe one, e.g. red house", text: $appModel.objectPrompt)
-                        .textFieldStyle(.roundedBorder)
-                        .submitLabel(.go)
-                        .onSubmit(generate)
-                    Button(action: generate) {
-                        if appModel.isGeneratingObject {
-                            ProgressView()
+                    PanelSection("In Scene", symbol: "cube") {
+                        if !appModel.objects.isEmpty {
+                            Text("\(appModel.objects.count)").monospacedDigit().foregroundStyle(.secondary)
+                        }
+                    } content: {
+                        if appModel.objects.isEmpty {
+                            Text("Nothing here yet. Tap a card above to add your first object.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
                         } else {
-                            Label("Generate", systemImage: "sparkles")
+                            objectList
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!appModel.canGenerateObject)
-                    .help("Add a new object to the base")
-
-                    if appModel.selectedObject != nil {
-                        Button("Replace") {
-                            Task { await appModel.replaceSelectedObject() }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(!appModel.canGenerateObject)
-                        .help("Replace the selected object with this prompt, keeping its place and keyframes")
-                    }
-                }
-                if let error = appModel.objectError {
-                    Text(error).font(.callout).foregroundStyle(.red)
-                } else if let note = appModel.objectNote {
-                    Text(note).font(.callout).foregroundStyle(.secondary)
-                }
             }
 
-            if appModel.objects.isEmpty {
-                Text("Tap a card above, or describe an object, to add it to the base. Then pinch and drag to arrange it.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                objectList
-                selectionActions
-            }
-           }
-          }
-          .scrollIndicators(.hidden)
-
-            Spacer(minLength: 0)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Pinch and drag an object to move it. Drag the ring's knob to turn it, or the corner handle to resize.")
-                if appModel.isSampleMode {
-                    Label("Sample mode: no AI service is set up, so prompts are matched to built-in objects.",
-                          systemImage: "info.circle")
-                }
-            }
-            .font(.footnote)
-            .foregroundStyle(.secondary)
+            HintRow(hints: [
+                ("hand.pinch", "Pinch and drag an object to move it"),
+                ("arrow.trianglehead.clockwise", "Drag the ring's knob to turn it, or the corner to resize"),
+            ])
         }
         .alert("Rename Object", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Name", text: $newName)
@@ -86,65 +66,112 @@ struct ObjectsPanel: View {
     }
 
     private var objectList: some View {
-        ScrollView {
-            VStack(spacing: 4) {
-                ForEach(appModel.objects) { object in
-                    let isSelected = object.id == appModel.selectedObjectID
+        VStack(spacing: 6) {
+            ForEach(appModel.objects) { object in
+                let isSelected = object.id == appModel.selectedObjectID
+
+                VStack(alignment: .leading, spacing: 0) {
                     Button {
-                        appModel.selectObject(object.id)
+                        withAnimation(.snappy) {
+                            appModel.selectObject(isSelected ? nil : object.id)
+                        }
                     } label: {
-                        HStack {
+                        HStack(spacing: 12) {
+                            ObjectThumbnail(object: object, isSelected: isSelected)
                             Text(object.name)
-                            Spacer()
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
                             Text(appModel.keyframeMembership(of: object.id))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                                .rotationEffect(.degrees(isSelected ? 180 : 0))
                         }
                         .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(isSelected ? AnyShapeStyle(.selection) : AnyShapeStyle(.clear),
-                                    in: RoundedRectangle(cornerRadius: 12))
-                        .contentShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.vertical, 11)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .hoverEffect()
                     .accessibilityAddTraits(isSelected ? .isSelected : [])
-                }
-            }
-        }
-        .frame(maxHeight: 150)
-    }
 
-    @ViewBuilder
-    private var selectionActions: some View {
-        if let selected = appModel.selectedObject {
-            VStack(alignment: .leading, spacing: 12) {
-                if appModel.canRecolorSelectedObject {
-                    ColorSwatches(selected: selected.recipe.colorName) { appModel.recolorSelectedObject($0) }
-                }
-                HStack(spacing: 12) {
-                    Button("Rename", systemImage: "pencil") {
-                        newName = selected.name
-                        renaming = selected
-                    }
-                    Button("Duplicate", systemImage: "plus.square.on.square") {
-                        appModel.duplicateSelectedObject()
-                    }
-                    Button("Delete", systemImage: "trash", role: .destructive) {
-                        appModel.deleteSelectedObject()
+                    if isSelected {
+                        selectedActions(for: object)
+                            .padding(.horizontal, 14)
+                            .padding(.bottom, 14)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
-                .buttonStyle(.bordered)
+                .background(isSelected ? AnyShapeStyle(.white.opacity(0.08)) : AnyShapeStyle(.clear),
+                            in: RoundedRectangle(cornerRadius: UI.smallCorner, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: UI.smallCorner, style: .continuous))
             }
-        } else {
-            Text("Select an object to recolor, replace, rename, duplicate, or delete it.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
         }
     }
 
-    private func generate() {
-        Task { await appModel.generateObject() }
+    /// Edits for the selected object, right under its row.
+    private func selectedActions(for object: AppModel.ObjectSummary) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if appModel.canRecolorSelectedObject {
+                ColorSwatches(selected: object.recipe.colorName) { appModel.recolorSelectedObject($0) }
+            }
+
+            ViewThatFits(in: .horizontal) {
+                actionButtons(for: object).labelStyle(.titleAndIcon)
+                actionButtons(for: object).labelStyle(.iconOnly)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+    }
+
+    private func actionButtons(for object: AppModel.ObjectSummary) -> some View {
+        HStack(spacing: 8) {
+            Button("Rename", systemImage: "pencil") {
+                newName = object.name
+                renaming = object
+            }
+            Button("Duplicate", systemImage: "plus.square.on.square") {
+                appModel.duplicateSelectedObject()
+            }
+            Button("Replace", systemImage: "arrow.triangle.2.circlepath") {
+                Task { await appModel.replaceSelectedObject() }
+            }
+            .disabled(!appModel.canGenerateObject)
+            .help("Type a description above, then replace this object with it. It keeps its place and keyframes.")
+            Spacer(minLength: 0)
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                appModel.deleteSelectedObject()
+            }
+        }
+    }
+}
+
+/// The object's library render, or a cube for generated ones.
+private struct ObjectThumbnail: View {
+    @Environment(AppModel.self) private var appModel
+    let object: AppModel.ObjectSummary
+    let isSelected: Bool
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(.white.opacity(isSelected ? 0.16 : 0.08))
+            if let kind = object.recipe.catalogKind, let image = appModel.catalogThumbnails.images[kind] {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(3)
+            } else {
+                Image(systemName: isSelected ? "cube.fill" : "cube")
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+            }
+        }
+        .frame(width: 34, height: 34)
+        .onAppear { appModel.catalogThumbnails.loadIfNeeded() }
     }
 }
 
@@ -155,18 +182,14 @@ private struct ColorSwatches: View {
     let choose: (String?) -> Void
 
     var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
+        HorizontalStrip(spacing: 8) {
                 swatch(nil, fill: AnyShapeStyle(.quaternary), label: "Original colors")
                     .overlay { Image(systemName: "arrow.uturn.backward").font(.caption2).allowsHitTesting(false) }
                 ForEach(SampleObjectCatalog.colorNames, id: \.self) { name in
                     swatch(name, fill: AnyShapeStyle(Color(uiColor: SampleObjectCatalog.color(named: name) ?? .gray)),
                            label: name.capitalized)
                 }
-            }
-            .padding(4)
         }
-        .scrollIndicators(.hidden)
     }
 
     private func swatch(_ name: String?, fill: AnyShapeStyle, label: String) -> some View {
@@ -194,20 +217,13 @@ private struct CatalogTray: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Library")
-                .font(.headline)
-            ScrollView(.horizontal) {
-                HStack(spacing: 10) {
-                    ForEach(SampleObjectCatalog.Kind.allCases, id: \.self) { kind in
-                        CatalogCard(kind: kind, image: appModel.catalogThumbnails.images[kind]) {
-                            appModel.placeCatalogObject(kind)
-                        }
+            HorizontalStrip {
+                ForEach(SampleObjectCatalog.Kind.allCases, id: \.self) { kind in
+                    CatalogCard(kind: kind, image: appModel.catalogThumbnails.images[kind]) {
+                        appModel.placeCatalogObject(kind)
                     }
                 }
-                .padding(.vertical, 4)
             }
-            .scrollIndicators(.hidden)
-            .scrollClipDisabled()
         }
         .onAppear { appModel.catalogThumbnails.loadIfNeeded() }
     }
@@ -222,8 +238,8 @@ private struct CatalogCard: View {
         Button(action: action) {
             VStack(spacing: 6) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 18)
-                        .fill(LinearGradient(colors: [.white.opacity(0.14), .white.opacity(0.04)],
+                    RoundedRectangle(cornerRadius: UI.smallCorner, style: .continuous)
+                        .fill(LinearGradient(colors: [.white.opacity(0.12), .white.opacity(0.03)],
                                              startPoint: .top, endPoint: .bottom))
                     if let image {
                         Image(uiImage: image)
@@ -235,9 +251,9 @@ private struct CatalogCard: View {
                         ProgressView()
                     }
                 }
-                .frame(width: 84, height: 84)
+                .frame(width: 88, height: 88)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 18)
+                    RoundedRectangle(cornerRadius: UI.smallCorner, style: .continuous)
                         .strokeBorder(.white.opacity(0.12), lineWidth: 1)
                 }
                 .animation(.smooth, value: image != nil)
@@ -245,9 +261,9 @@ private struct CatalogCard: View {
                 Text(kind.name)
                     .font(.caption)
                     .lineLimit(1)
-                    .frame(width: 84)
+                    .frame(width: 88)
             }
-            .contentShape(RoundedRectangle(cornerRadius: 18))
+            .contentShape(RoundedRectangle(cornerRadius: UI.smallCorner, style: .continuous))
         }
         .buttonStyle(.plain)
         .hoverEffect()

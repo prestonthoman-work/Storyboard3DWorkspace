@@ -4,35 +4,42 @@
 //
 
 import SwiftUI
-import TipKit
 
 /// The control panel shown while the immersive workspace is open. One tab per workflow step.
 struct WorkspacePanel: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         @Bindable var appModel = appModel
 
         TabView(selection: $appModel.selectedTab) {
-            Tab("Base", systemImage: "square.3.layers.3d.down.right", value: WorkspaceTab.base) {
-                PanelPage(title: "Base", tip: BaseTip()) { BasePanel() }
+            Tab(WorkspaceTab.set.title, systemImage: WorkspaceTab.set.symbol, value: WorkspaceTab.set) {
+                PanelPage { SetPanel() }
             }
-            Tab("Objects", systemImage: "cube", value: WorkspaceTab.objects) {
-                PanelPage(title: "Objects", tip: ObjectsTip()) { ObjectsPanel() }
+            Tab(WorkspaceTab.objects.title, systemImage: WorkspaceTab.objects.symbol, value: WorkspaceTab.objects) {
+                PanelPage { ObjectsPanel() }
             }
-            Tab("Background", systemImage: "photo", value: WorkspaceTab.background) {
-                PanelPage(title: "Background", tip: BackgroundTip()) { BackgroundPanel() }
+            Tab(WorkspaceTab.animate.title, systemImage: WorkspaceTab.animate.symbol, value: WorkspaceTab.animate) {
+                PanelPage { AnimatePanel() }
             }
-            Tab("Animate", systemImage: "film", value: WorkspaceTab.animate) {
-                PanelPage(title: "Animate", tip: AnimateTip()) { AnimatePanel() }
-            }
-            Tab("Capture", systemImage: "camera", value: WorkspaceTab.capture) {
-                PanelPage(title: "Capture", tip: CaptureTip()) { CapturePanel() }
+            Tab(WorkspaceTab.photos.title, systemImage: WorkspaceTab.photos.symbol, value: WorkspaceTab.photos) {
+                PanelPage { CapturePanel() }
             }
         }
         .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
             WorkspaceOrnament()
                 .padding(.top, 12)
+        }
+        // The timeline window comes up with the Animate tab, so keyframes are always in reach.
+        .onChange(of: appModel.selectedTab) { _, tab in
+            if tab == .animate && !appModel.isTimelineWindowOpen {
+                openWindow(id: TimelineWindow.windowID)
+            }
+        }
+        .onDisappear {
+            dismissWindow(id: TimelineWindow.windowID)
         }
     }
 }
@@ -49,9 +56,11 @@ private struct WorkspaceOrnament: View {
             HStack(spacing: 4) {
                 Button("Undo", systemImage: "arrow.uturn.backward") { appModel.undo() }
                     .disabled(!appModel.canUndo)
+                    .keyboardShortcut("z", modifiers: .command)
                     .help("Undo")
                 Button("Redo", systemImage: "arrow.uturn.forward") { appModel.redo() }
                     .disabled(!appModel.canRedo)
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
                     .help("Redo")
             }
 
@@ -66,6 +75,10 @@ private struct WorkspaceOrnament: View {
                     Label("Snapping", systemImage: "squareshape.split.3x3")
                 }
                 .help("Snap rotation to 15° and line objects up with each other")
+                Toggle(isOn: $appModel.showsObjectLabels) {
+                    Label("Labels", systemImage: "tag")
+                }
+                .help("Show each object's name above it in the room. Labels never appear in photos.")
             }
             .toggleStyle(.button)
         }
@@ -116,23 +129,24 @@ private struct ShutterButton: View {
     }
 }
 
-/// Shared page chrome: a title and the Exit button.
-private struct PanelPage<Content: View, PageTip: Tip>: View {
-    let title: String
-    /// Shown above the page until dismissed.
-    let tip: PageTip
+/// Shared page chrome: the project's name, the way back to projects, and the guide.
+private struct PanelPage<Content: View>: View {
+    @Environment(AppModel.self) private var appModel
     @ViewBuilder var content: Content
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 12) {
-                TipView(tip)
+            VStack(alignment: .leading, spacing: UI.sectionSpacing) {
+                if !appModel.isGuideHidden {
+                    NextStepCard()
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
                 content
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(.horizontal, 28)
-            .padding(.bottom, 24)
-            .navigationTitle(title)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 22)
+            .navigationTitle(appModel.projectName)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     ToggleImmersiveSpaceButton()
@@ -145,5 +159,5 @@ private struct PanelPage<Content: View, PageTip: Tip>: View {
 #Preview(windowStyle: .automatic) {
     WorkspacePanel()
         .environment(AppModel())
-        .frame(width: 500, height: 680)
+        .frame(width: UI.panelSize.width, height: UI.panelSize.height)
 }

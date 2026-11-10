@@ -7,10 +7,11 @@
 
 import SwiftUI
 import RealityKit
-import TipKit
 
 @main
 struct Storyboard3DWorkspaceApp: App {
+
+    static let mainWindowID = "main"
 
     @State private var appModel = AppModel()
     @Environment(\.scenePhase) private var scenePhase
@@ -31,11 +32,12 @@ struct Storyboard3DWorkspaceApp: App {
         TurntableGripComponent.registerComponent()
         TurntableComponent.registerComponent()
         TurntableSystem.registerSystem()
-        try? Tips.configure()
+        ObjectLabelComponent.registerComponent()
+        ObjectLabelSystem.registerSystem()
     }
 
     var body: some SwiftUI.Scene {
-        WindowGroup {
+        WindowGroup(id: Self.mainWindowID) {
             ContentView()
                 .environment(appModel)
                 .onChange(of: scenePhase) { _, phase in
@@ -46,6 +48,21 @@ struct Storyboard3DWorkspaceApp: App {
         // A utility panel sits low and close to the viewer, keeping the model's sight line clear.
         .defaultWindowPlacement { _, _ in
             WindowPlacement(.utilityPanel)
+        }
+
+        // A wide keyframe editor beside the control panel.
+        WindowGroup(id: TimelineWindow.windowID) {
+            TimelineWindow()
+                .environment(appModel)
+        }
+        .defaultSize(width: 1100, height: 460)
+        .windowResizability(.contentMinSize)
+        .defaultWindowPlacement { _, context in
+            if let main = context.windows.first(where: { $0.id == Self.mainWindowID }) {
+                WindowPlacement(.trailing(main))
+            } else {
+                WindowPlacement(.utilityPanel)
+            }
         }
 
         // A large screening window for the storyboard.

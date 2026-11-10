@@ -21,7 +21,17 @@ class AppModel {
     }
     var immersiveSpaceState = ImmersiveSpaceState.closed
 
-    var selectedTab: WorkspaceTab = .base
+    var selectedTab: WorkspaceTab = .set
+
+    /// The person closed the "next step" guide. Remembered across launches.
+    var isGuideHidden: Bool = UserDefaults.standard.bool(forKey: "isGuideHidden") {
+        didSet { UserDefaults.standard.set(isGuideHidden, forKey: "isGuideHidden") }
+    }
+
+    /// Floating name tags above objects in the room. Remembered across launches.
+    var showsObjectLabels: Bool = UserDefaults.standard.bool(forKey: "showsObjectLabels") {
+        didSet { UserDefaults.standard.set(showsObjectLabels, forKey: "showsObjectLabels") }
+    }
 
     /// The RealityKit entities for the staged composition.
     let workspace: WorkspaceScene
@@ -63,6 +73,43 @@ class AppModel {
         } catch {
             projectError = "A new project couldn't be created."
         }
+    }
+
+    /// Starts a project from a ready-made set. Animated starters come with two keyframes.
+    /// The set-up isn't undoable: undo starts from the finished starter.
+    func createProject(from starter: StarterScene) async {
+        await createProject()
+        guard starter != .blank, currentProject != nil else { return }
+
+        applyBaseTemplate(starter.template)
+        var placed: [(StarterScene.Placement, Entity)] = []
+        for placement in starter.placements {
+            placeCatalogObject(placement.kind, color: placement.color, name: placement.name)
+            guard let id = selectedObjectID, let object = workspace.object(withID: id) else { continue }
+            object.position = [placement.x, 0, placement.z]
+            object.orientation = simd_quatf(angle: placement.yawDegrees * .pi / 180, axis: [0, 1, 0])
+            ObjectGravitySystem.keepAboveSurface(object)
+            placed.append((placement, object))
+        }
+        selectObject(nil)
+        objectNote = nil
+
+        if starter.isAnimated {
+            animator.addKeyframe()
+            animator.setShotType(.establishing, for: animator.selectedKeyframeID!)
+            for (placement, object) in placed {
+                guard let target = placement.movesTo else { continue }
+                object.position = [target.x, object.position.y, target.y]
+            }
+            animator.addKeyframe()
+            animator.setShotType(.wide, for: animator.selectedKeyframeID!)
+        }
+        autoSaveTask?.cancel()
+        autoSaveTask = nil
+        undoStack.removeAll()
+        redoStack.removeAll()
+        saveNow()
+        refreshProjects()
     }
 
     func openProject(_ info: ProjectStore.Info) async {
@@ -111,7 +158,7 @@ class AppModel {
     private func load(_ info: ProjectStore.Info) async {
         resetToEmptyProject()
         currentProject = info
-        selectedTab = .base
+        selectedTab = .set
 
         var restoredBackdrop: BackdropImage?
         if let loaded = ProjectStore.load(info.id) {
@@ -379,20 +426,49 @@ class AppModel {
     let catalogThumbnails = CatalogThumbnails()
 
     /// Places a built-in object straight from the library tray.
-    func placeCatalogObject(_ kind: SampleObjectCatalog.Kind) {
+    func placeCatalogObject(_ kind: SampleObjectCatalog.Kind, color: String? = nil, name: String? = nil) {
         animator.pause()
         objectError = nil
-        place(GeneratedModel(displayName: kind.name, source: .sample,
-                             recipe: .sampleObject(kind: kind.rawValue, color: nil),
-                             entity: SampleObjectCatalog.make(kind, tint: nil), note: nil))
+        let recipe = ModelRecipe.sampleObject(kind: kind.rawValue, color: color)
+        place(GeneratedModel(displayName: name ?? recipe.defaultName ?? kind.name, source: .sample,
+                             recipe: recipe,
+                             entity: SampleObjectCatalog.make(kind, tint: SampleObjectCatalog.color(named: color)),
+                             note: nil))
+    }
+
+    // MARK: Naming
+
+    /// A name no other object has: "Tree", then "Tree 2", "Tree 3", so every object can be
+    /// told apart in lists, labels, and keyframes.
+    func uniqueObjectName(_ name: String, excluding id: ObjectID? = nil) -> String {
+        let taken = Set(objects.filter { $0.id != id }.map(\.name))
+        guard taken.contains(name) else { return name }
+        let stem = Self.nameStem(name)
+        var number = 2
+        while taken.contains("\(stem) \(number)") { number += 1 }
+        return "\(stem) \(number)"
+    }
+
+    /// "Tree 3" → "Tree". Names without a trailing number are returned unchanged.
+    static func nameStem(_ name: String) -> String {
+        guard let space = name.lastIndex(of: " "), Int(name[name.index(after: space)...]) != nil else { return name }
+        return String(name[..<space])
+    }
+
+    /// True for names the app gave on its own, such as "Red House" or "Red House 2", which
+    /// can follow the object when it's recolored. Custom names are kept.
+    static func isAutomaticName(_ name: String, for defaultName: String?) -> Bool {
+        guard let defaultName else { return false }
+        return nameStem(name) == defaultName || name == defaultName
     }
 
     private func place(_ model: GeneratedModel) {
         checkpoint()
         let id = ObjectID()
-        let object = workspace.addObject(model.entity, name: model.displayName, id: id)
+        let name = uniqueObjectName(model.displayName)
+        let object = workspace.addObject(model.entity, name: name, id: id)
         SceneFeedback.appear(object)
-        objects.append(ObjectSummary(id: id, name: model.displayName, source: model.source, recipe: model.recipe))
+        objects.append(ObjectSummary(id: id, name: name, source: model.source, recipe: model.recipe))
         selectObject(id)
         objectNote = model.note
         documentChanged()
@@ -404,8 +480,11 @@ class AppModel {
         animator.pause()
         checkpoint()
         let id = ObjectID()
-        SceneFeedback.appear(workspace.duplicate(object, id: id))
-        objects.append(ObjectSummary(id: id, name: summary.name, source: summary.source, recipe: summary.recipe))
+        let name = uniqueObjectName(summary.name)
+        let copy = workspace.duplicate(object, id: id)
+        copy.name = name
+        SceneFeedback.appear(copy)
+        objects.append(ObjectSummary(id: id, name: name, source: summary.source, recipe: summary.recipe))
         selectObject(id)
         documentChanged()
         sceneEdited()
@@ -438,7 +517,9 @@ class AppModel {
         checkpoint()
         workspace.replaceContent(of: object, with: content)
         SceneFeedback.appear(object)
-        let name = summary.name == summary.recipe.defaultName ? (recipe.defaultName ?? summary.name) : summary.name
+        let name = Self.isAutomaticName(summary.name, for: summary.recipe.defaultName)
+            ? uniqueObjectName(recipe.defaultName ?? summary.name, excluding: summary.id)
+            : summary.name
         object.name = name
         updateSummary(summary.id) { ObjectSummary(id: $0.id, name: name, source: $0.source, recipe: recipe) }
         workspace.showSelection(on: object)
@@ -461,8 +542,9 @@ class AppModel {
             checkpoint()
             workspace.replaceContent(of: object, with: model.entity)
             SceneFeedback.appear(object)
-            object.name = model.displayName
-            updateSummary(summary.id) { ObjectSummary(id: $0.id, name: model.displayName, source: model.source, recipe: model.recipe) }
+            let name = uniqueObjectName(model.displayName, excluding: summary.id)
+            object.name = name
+            updateSummary(summary.id) { ObjectSummary(id: $0.id, name: name, source: model.source, recipe: model.recipe) }
             workspace.showSelection(on: object)
             objectNote = model.note
             objectPrompt = ""
@@ -691,11 +773,11 @@ class AppModel {
         }
     }
 
-    /// The viewfinder shows whenever a photo can be lined up: on the Capture tab, on the
+    /// The viewfinder shows whenever a photo can be lined up: on the Photos tab, on the
     /// Animate tab while a keyframe is selected, and during any countdown.
     var isViewfinderVisible: Bool {
         guard immersiveSpaceState == .open else { return false }
-        return selectedTab == .capture
+        return selectedTab == .photos
             || (selectedTab == .animate && animator.selectedKeyframe != nil)
             || captureCountdown != nil
     }
@@ -837,6 +919,7 @@ class AppModel {
         checkpoint()
         keyframeNotice = nil
         animator.addKeyframe()
+        SoundEffects.play(.tick, on: workspace.baseAnchor, gain: -12, pitchVariation: 0)
         focusedKeyframePhotoID = nil
         exportedFile = nil
         documentChanged()
@@ -869,9 +952,14 @@ class AppModel {
     /// Saves the scene into the selected keyframe. If its pose changed, its photos no
     /// longer show it, so they're detached (they stay in the library).
     private func autoSaveSelectedKeyframe() {
-        if let changed = animator.saveSceneToSelectedKeyframe() {
-            keyframesChanged([changed])
+        let wasOnKeyframe = animator.selectedKeyframeID != nil
+        guard let changed = animator.saveSceneToSelectedKeyframe() else { return }
+        if !wasOnKeyframe, let keyframe = animator.timeline.keyframe(changed),
+           let number = animator.number(of: changed) {
+            keyframeNotice = "Added keyframe \(number) at \(keyframe.time.formatted(.number.precision(.fractionLength(1)))) s to hold your change."
+            exportedFile = nil
         }
+        keyframesChanged([changed])
     }
 
     /// Keyframes whose content changed. Their photos no longer show them, so they're
@@ -980,15 +1068,60 @@ class AppModel {
     }
 
     func deleteSelectedKeyframe() {
+        guard let id = animator.selectedKeyframeID else { return }
+        deleteKeyframe(id)
+    }
+
+    /// Deletes a keyframe; its photos move to the library. Its neighbor becomes selected.
+    func deleteKeyframe(_ id: Keyframe.ID) {
         checkpoint()
-        if let deleted = animator.deleteSelectedKeyframe() {
-            photos.detachPhotos(from: deleted)
-            focusedKeyframePhotoID = nil
-            keyframeNotice = nil
+        guard animator.deleteKeyframe(id) else { return }
+        photos.detachPhotos(from: id)
+        focusedKeyframePhotoID = nil
+        keyframeNotice = nil
+        exportedFile = nil
+        documentChanged()
+    }
+
+    /// Copies a keyframe's poses and notes into a new keyframe right after it. Photos stay
+    /// with the original.
+    func duplicateKeyframe(_ id: Keyframe.ID) {
+        checkpoint()
+        guard animator.duplicateKeyframe(id) != nil else { return }
+        focusedKeyframePhotoID = nil
+        keyframeNotice = nil
+        exportedFile = nil
+        documentChanged()
+    }
+
+    /// Call when a keyframe drag starts, so the whole drag undoes in one step.
+    func beginRetimingKeyframe() {
+        checkpoint()
+    }
+
+    /// Moves a keyframe along the timeline while it's dragged.
+    func retimeKeyframe(_ id: Keyframe.ID, to time: TimeInterval) {
+        if animator.selectedKeyframeID != id { focusedKeyframePhotoID = nil }
+        if animator.retimeKeyframe(id, to: time) {
             exportedFile = nil
-            documentChanged()
         }
     }
+
+    func endRetimingKeyframe() {
+        documentChanged()
+    }
+
+    /// Selects the previous or next keyframe.
+    func stepKeyframe(forward: Bool) {
+        flushAutoSave()
+        keyframeNotice = nil
+        animator.step(forward: forward)
+        focusedKeyframePhotoID = nil
+        captureStatus = nil
+    }
+
+    /// The timeline window is showing.
+    var isTimelineWindowOpen = false
 
     func selectKeyframe(_ keyframe: Keyframe) {
         flushAutoSave()
@@ -999,10 +1132,14 @@ class AppModel {
         documentChanged()
     }
 
-    func scrubTimeline(to time: TimeInterval) {
+    func scrubTimeline(to time: TimeInterval, snapTolerance: TimeInterval = 0.03) {
         flushAutoSave()
-        animator.scrub(to: time)
-        focusedKeyframePhotoID = nil
+        let previous = animator.selectedKeyframeID
+        animator.scrub(to: time, snapTolerance: snapTolerance)
+        if animator.selectedKeyframeID != previous {
+            focusedKeyframePhotoID = nil
+            keyframeNotice = nil
+        }
     }
 
     func setPrimaryPhoto(_ photo: CapturedPhoto) {
@@ -1093,7 +1230,8 @@ class AppModel {
             StoryboardSheetExporter.Panel(
                 number: index + 1,
                 image: photos.primaryPhoto(for: keyframe.id).flatMap { photos.image(for: $0) },
-                note: keyframe.note
+                note: keyframe.note,
+                shotType: keyframe.shotType
             )
         }
         let url = exportURL(suffix: "Storyboard", fileExtension: "pdf")
@@ -1115,6 +1253,14 @@ class AppModel {
     // MARK: Notes
 
     /// Shot notes for a keyframe. Saved, but typing isn't an undo step.
+    func setShotType(_ shotType: ShotType?, forKeyframe id: Keyframe.ID) {
+        guard animator.timeline.keyframe(id)?.shotType != shotType else { return }
+        checkpoint()
+        animator.setShotType(shotType, for: id)
+        exportedFile = nil
+        documentChanged()
+    }
+
     func setNote(_ note: String, forKeyframe id: Keyframe.ID) {
         animator.setNote(note, for: id)
         exportedFile = nil

@@ -67,6 +67,7 @@ struct ImmersiveView: View {
             ]
         } update: { _, attachments in
             appModel.workspace.setViewfinderVisible(appModel.isViewfinderVisible)
+            updateLabels(attachments)
             if let framing = attachments.entity(for: Self.framingAttachmentID) {
                 let half = WorkspaceScene.viewfinderHalfSize(for: appModel.captureLens)
                 framing.position = [0, -half.y - 0.014, -WorkspaceScene.viewfinderDistance]
@@ -80,6 +81,11 @@ struct ImmersiveView: View {
             }
             Attachment(id: Self.toolbarAttachmentID) {
                 ObjectToolbar()
+            }
+            ForEach(appModel.objects) { object in
+                Attachment(id: object.id) {
+                    ObjectNameTag(name: object.name)
+                }
             }
         }
         // The base's edge: swipe to spin the whole set like a turntable.
@@ -111,6 +117,24 @@ struct ImmersiveView: View {
         .onDisappear {
             appModel.workspaceDidClose()
             appModel.workspace.subscriptions.removeAll()
+        }
+    }
+}
+
+extension ImmersiveView {
+    /// Hands each name tag its object and says whether it should show.
+    private func updateLabels(_ attachments: RealityViewAttachments) {
+        let workspace = appModel.workspace
+        for object in appModel.objects {
+            guard let tag = attachments.entity(for: object.id) else { continue }
+            if tag.parent !== workspace.labelsRoot {
+                workspace.labelsRoot.addChild(tag)
+                tag.components.set(BillboardComponent())
+            }
+            tag.components.set(ObjectLabelComponent(
+                target: workspace.object(withID: object.id),
+                wantsVisible: appModel.showsObjectLabels && object.id != appModel.selectedObjectID
+            ))
         }
     }
 }

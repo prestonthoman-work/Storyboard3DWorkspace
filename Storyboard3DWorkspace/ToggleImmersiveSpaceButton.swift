@@ -49,8 +49,13 @@ struct ToggleImmersiveSpaceButton: View {
                 }
             }
         } label: {
-            Text(appModel.immersiveSpaceState == .open ? "Exit" : "Enter Workspace")
+            if appModel.immersiveSpaceState == .open {
+                Label("Projects", systemImage: "square.grid.2x2")
+            } else {
+                Text("Enter Workspace")
+            }
         }
+        .help(appModel.immersiveSpaceState == .open ? "Save and go back to your projects" : "Open the workspace")
         .disabled(appModel.immersiveSpaceState == .inTransition)
         .animation(.none, value: 0)
         .fontWeight(.semibold)

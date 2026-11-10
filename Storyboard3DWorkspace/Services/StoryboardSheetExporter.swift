@@ -13,6 +13,7 @@ enum StoryboardSheetExporter {
         /// The keyframe's primary photo, or nil to draw an empty frame.
         let image: UIImage?
         let note: String
+        var shotType: ShotType?
     }
 
     /// How many shots fit on a page.
@@ -112,7 +113,7 @@ enum StoryboardSheetExporter {
         border.lineWidth = 0.5
         border.stroke()
 
-        let number = "Shot \(panel.number)" as NSString
+        let number = ("Shot \(panel.number)" + (panel.shotType.map { "  ·  \($0.abbreviation)" } ?? "")) as NSString
         number.draw(at: CGPoint(x: frame.minX, y: frame.maxY + 6), withAttributes: [
             .font: UIFont.systemFont(ofSize: compact ? 9 : 11, weight: .semibold), .foregroundColor: UIColor.black
         ])

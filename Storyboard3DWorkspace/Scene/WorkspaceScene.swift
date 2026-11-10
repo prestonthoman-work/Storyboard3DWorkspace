@@ -44,6 +44,8 @@ final class WorkspaceScene {
     static let viewfinderDistance: Float = 0.5
     /// Ring, knobs, and toolbar anchor around the selected object.
     let handles = SelectionHandles()
+    /// Floating name tags. Outside the base, so they're never in a capture.
+    let labelsRoot = Entity()
     /// Lines shown while an object snaps into line with another.
     private let guideAlongX = ModelEntity()
     private let guideAlongZ = ModelEntity()
@@ -103,6 +105,8 @@ final class WorkspaceScene {
         root.addChild(previewLights)
         root.addChild(previewEnvironment)
         root.addChild(handles.root)
+        labelsRoot.name = "ObjectLabels"
+        root.addChild(labelsRoot)
 
         var guideMaterial = UnlitMaterial(color: UIColor(red: 0.45, green: 0.85, blue: 1, alpha: 1))
         guideMaterial.blending = .transparent(opacity: 0.9)

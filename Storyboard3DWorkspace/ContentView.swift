@@ -19,7 +19,7 @@ struct ContentView: View {
                 ProjectsView()
             }
         }
-        .frame(width: 500, height: 680)
+        .frame(width: UI.panelSize.width, height: UI.panelSize.height)
         .task {
             await appModel.loadDefaultBackgroundIfNeeded()
         }

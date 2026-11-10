@@ -24,13 +24,14 @@ struct StoryboardViewer: View {
         let number: Int
         let image: UIImage
         let note: String
+        let shotType: ShotType?
     }
 
     private var shots: [Shot] {
         appModel.animator.timeline.keyframes.enumerated().compactMap { offset, keyframe in
             guard let photo = appModel.photos.primaryPhoto(for: keyframe.id),
                   let image = appModel.photos.image(for: photo) else { return nil }
-            return Shot(id: keyframe.id, number: offset + 1, image: image, note: keyframe.note)
+            return Shot(id: keyframe.id, number: offset + 1, image: image, note: keyframe.note, shotType: keyframe.shotType)
         }
     }
 
@@ -85,7 +86,7 @@ struct StoryboardViewer: View {
 
     private func caption(for shot: Shot, total: Int) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("SHOT \(String(format: "%02d", shot.number))")
+            Text("SHOT \(String(format: "%02d", shot.number))" + (shot.shotType.map { "  ·  \($0.name.uppercased())" } ?? ""))
                 .font(.caption.weight(.semibold).monospacedDigit())
                 .tracking(3)
                 .foregroundStyle(.white.opacity(0.7))
