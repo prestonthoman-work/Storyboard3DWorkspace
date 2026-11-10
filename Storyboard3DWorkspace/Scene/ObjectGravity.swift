@@ -37,6 +37,8 @@ struct ObjectGravitySystem: System {
     /// Paused during animation playback so falling doesn't fight the keyframes.
     /// Objects are still kept from sinking below the surface.
     static var isFallingPaused = false
+    /// Landing speed (m/s) above which an object visibly squashes and makes a sound.
+    static let landingFeedbackSpeed: Float = 0.45
 
     private static let query = EntityQuery(where: .has(ObjectGravityComponent.self))
 
@@ -59,7 +61,13 @@ struct ObjectGravitySystem: System {
                 gravity.fallSpeed += Self.gravity * deltaTime
                 let drop = min(gravity.fallSpeed * deltaTime, gap)
                 object.position.y -= drop
-                if drop >= gap { gravity.fallSpeed = 0 }
+                if drop >= gap {
+                    // Anything faster than a ~1 cm drop gets a squash and a thud.
+                    if gravity.fallSpeed > Self.landingFeedbackSpeed {
+                        SceneFeedback.landed(object, speed: gravity.fallSpeed)
+                    }
+                    gravity.fallSpeed = 0
+                }
             } else {
                 gravity.fallSpeed = 0
             }

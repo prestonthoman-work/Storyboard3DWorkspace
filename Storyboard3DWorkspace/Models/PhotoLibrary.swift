@@ -28,6 +28,8 @@ struct CapturedPhoto: Identifiable {
     /// taken before angles were saved.
     var camera: CaptureCamera?
     var lighting: LightingPreset = .studio
+    /// Frame format and film grade, so a re-render is finished the same way.
+    var look: CaptureLook = .plain
     /// Where the backdrop sat when the photo was taken, so a re-render matches.
     var backdropPose: CodableTransform?
 
@@ -53,9 +55,10 @@ final class PhotoLibrary {
 
     @discardableResult
     func add(_ image: CGImage, lens: CaptureLens, keyframe: Keyframe.ID?, camera: CaptureCamera? = nil,
-             lighting: LightingPreset = .studio, backdropPose: CodableTransform? = nil) -> CapturedPhoto? {
+             lighting: LightingPreset = .studio, look: CaptureLook = .plain,
+             backdropPose: CodableTransform? = nil) -> CapturedPhoto? {
         guard let photo = makePhoto(image, lens: lens, assignment: keyframe.map { .keyframe($0) } ?? .unassigned,
-                                    camera: camera, lighting: lighting, backdropPose: backdropPose)
+                                    camera: camera, lighting: lighting, look: look, backdropPose: backdropPose)
         else { return nil }
         photos.append(photo)
         // A keyframe's first photo becomes its primary until another is chosen.
@@ -69,12 +72,12 @@ final class PhotoLibrary {
     /// The old version stays in the archive so undo can bring it back.
     @discardableResult
     func replace(_ old: CapturedPhoto, with image: CGImage, camera: CaptureCamera? = nil,
-                 lighting: LightingPreset? = nil) -> CapturedPhoto? {
+                 lighting: LightingPreset? = nil, look: CaptureLook? = nil) -> CapturedPhoto? {
         guard let index = photos.firstIndex(where: { $0.id == old.id }) else { return nil }
         let newCamera = camera ?? old.camera
         guard let photo = makePhoto(image, lens: newCamera?.lens ?? old.lens, assignment: old.assignment,
                                     camera: newCamera, lighting: lighting ?? old.lighting,
-                                    backdropPose: old.backdropPose)
+                                    look: look ?? old.look, backdropPose: old.backdropPose)
         else { return nil }
         photos[index] = photo
         if let keyframe = old.keyframeID, primaryPhotoIDs[keyframe] == old.id {
@@ -93,13 +96,13 @@ final class PhotoLibrary {
     }
 
     private func makePhoto(_ image: CGImage, lens: CaptureLens, assignment: CapturedPhoto.Assignment,
-                           camera: CaptureCamera?, lighting: LightingPreset,
+                           camera: CaptureCamera?, lighting: LightingPreset, look: CaptureLook,
                            backdropPose: CodableTransform?) -> CapturedPhoto? {
         let full = UIImage(cgImage: image)
         guard let data = full.jpegData(compressionQuality: 0.92) else { return nil }
         let photo = CapturedPhoto(lens: lens, jpegData: data, thumbnail: Self.makeThumbnail(full),
                                   assignment: assignment, camera: camera, lighting: lighting,
-                                  backdropPose: backdropPose)
+                                  look: look, backdropPose: backdropPose)
         archive[photo.id] = photo
         remember(full, for: photo.id)
         return photo

@@ -16,52 +16,31 @@ struct ProjectsView: View {
     @State private var deleting: ProjectStore.Info?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .center, spacing: 16) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Storyboard 3D")
-                        .font(.extraLargeTitle2)
-                    Text("Build a scene on your table, set a backdrop, and frame it from any angle.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-
-            Button {
-                Task {
-                    await appModel.createProject()
-                    await enterWorkspace()
-                }
-            } label: {
-                Label("New Project", systemImage: "plus")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(appModel.immersiveSpaceState != .closed)
+        VStack(alignment: .leading, spacing: 18) {
+            header
 
             if let error = appModel.projectError {
                 Text(error).font(.callout).foregroundStyle(.red)
             }
 
             if appModel.projects.isEmpty {
-                Text("Your projects will appear here.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Spacer()
+                emptyState
             } else {
-                Text("Projects")
-                    .font(.headline)
                 ScrollView {
-                    VStack(spacing: 6) {
+                    LazyVStack(spacing: 14) {
                         ForEach(appModel.projects) { project in
-                            row(for: project)
+                            card(for: project)
+                                .transition(.scale(scale: 0.96).combined(with: .opacity))
                         }
                     }
+                    .padding(.vertical, 4)
+                    .animation(.snappy, value: appModel.projects.map(\.id))
                 }
                 .scrollIndicators(.hidden)
+                .scrollClipDisabled()
             }
         }
-        .padding(32)
+        .padding(28)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task(id: appModel.projects) {
             covers = Dictionary(uniqueKeysWithValues: appModel.projects.compactMap { project in
@@ -87,47 +66,93 @@ struct ProjectsView: View {
         }
     }
 
-    private func row(for project: ProjectStore.Info) -> some View {
-        HStack(spacing: 12) {
+    private var header: some View {
+        HStack(alignment: .bottom, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Storyboard 3D")
+                    .font(.extraLargeTitle2)
+                Text("Stage scenes on your table. Frame every shot.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
             Button {
                 Task {
-                    await appModel.openProject(project)
+                    await appModel.createProject()
                     await enterWorkspace()
                 }
             } label: {
-                HStack(spacing: 14) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(.quaternary)
-                        if let cover = covers[project.id] {
-                            Image(uiImage: cover)
-                                .resizable()
-                                .aspectRatio(16 / 9, contentMode: .fill)
-                        } else {
-                            Image(systemName: "cube.transparent")
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .frame(width: 96, height: 54)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(project.name)
-                            .font(.headline)
-                            .lineLimit(1)
-                        Text("Edited \(project.modified.formatted(.relative(presentation: .named)))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(8)
-                .contentShape(RoundedRectangle(cornerRadius: 14))
+                Label("New", systemImage: "plus")
             }
-            .buttonStyle(.plain)
-            .hoverEffect()
+            .buttonStyle(.borderedProminent)
             .disabled(appModel.immersiveSpaceState != .closed)
+            .help("Start a new project")
+        }
+    }
 
+    private var emptyState: some View {
+        VStack(spacing: 14) {
+            Spacer()
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(colors: [.white.opacity(0.16), .white.opacity(0.04)],
+                                         startPoint: .top, endPoint: .bottom))
+                    .frame(width: 120, height: 120)
+                Image(systemName: "film.stack")
+                    .font(.system(size: 46, weight: .light))
+                    .symbolEffect(.pulse, options: .repeat(2))
+            }
+            Text("Your first storyboard")
+                .font(.title2.weight(.semibold))
+            Text("Build a small set on a real table, light it, and photograph each shot from any angle.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 340)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// A large cover card: the project's best photo, its name over a soft shadow, and
+    /// how many shots it has.
+    private func card(for project: ProjectStore.Info) -> some View {
+        Button {
+            Task {
+                await appModel.openProject(project)
+                await enterWorkspace()
+            }
+        } label: {
+            ZStack(alignment: .bottomLeading) {
+                cover(for: project)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(16 / 9, contentMode: .fit)
+
+                LinearGradient(colors: [.clear, .black.opacity(0.15), .black.opacity(0.72)],
+                               startPoint: .center, endPoint: .bottom)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(project.name)
+                        .font(.title3.weight(.semibold))
+                        .lineLimit(1)
+                    Text(subtitle(for: project))
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+                .foregroundStyle(.white)
+                .padding(18)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 24))
+            .overlay {
+                RoundedRectangle(cornerRadius: 24)
+                    .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+            }
+            .contentShape(.hoverEffect, RoundedRectangle(cornerRadius: 24))
+        }
+        .buttonStyle(.plain)
+        .hoverEffect()
+        .disabled(appModel.immersiveSpaceState != .closed)
+        .overlay(alignment: .topTrailing) {
             Menu {
                 Button("Rename", systemImage: "pencil") {
                     newName = project.name
@@ -144,8 +169,37 @@ struct ProjectsView: View {
                     .labelStyle(.iconOnly)
             }
             .buttonBorderShape(.circle)
+            .padding(12)
             .accessibilityLabel("Options for \(project.name)")
         }
+    }
+
+    @ViewBuilder
+    private func cover(for project: ProjectStore.Info) -> some View {
+        if let cover = covers[project.id] {
+            Image(uiImage: cover)
+                .resizable()
+                .aspectRatio(16 / 9, contentMode: .fill)
+        } else {
+            // No photos yet: a calm gradient tinted per project, with a diorama glyph.
+            let hue = Double(project.id.uuid.0) / 255
+            ZStack {
+                LinearGradient(colors: [Color(hue: hue, saturation: 0.35, brightness: 0.42),
+                                        Color(hue: (hue + 0.08).truncatingRemainder(dividingBy: 1),
+                                              saturation: 0.45, brightness: 0.22)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                Image(systemName: "cube.transparent")
+                    .font(.system(size: 44, weight: .ultraLight))
+                    .foregroundStyle(.white.opacity(0.35))
+                    .offset(y: -14)
+            }
+        }
+    }
+
+    private func subtitle(for project: ProjectStore.Info) -> String {
+        let edited = "Edited \(project.modified.formatted(.relative(presentation: .named)))"
+        guard let shots = project.shotCount, shots > 0 else { return edited }
+        return "\(shots) shot\(shots == 1 ? "" : "s")  ·  \(edited)"
     }
 
     /// Opens the immersive workspace for the project that was just loaded.

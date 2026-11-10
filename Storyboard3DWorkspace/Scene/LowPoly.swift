@@ -8,32 +8,75 @@ import UIKit
 
 /// Small helpers for building flat-shaded, low-detail geometry.
 enum LowPoly {
-    static func material(_ color: UIColor, roughness: Float = 0.85) -> SimpleMaterial {
-        SimpleMaterial(color: color, roughness: .float(roughness), isMetallic: false)
+    /// How a surface reflects light, like the paint and materials on a scale model.
+    enum Finish {
+        /// Chalky, like plaster, foliage, or stone.
+        case matte
+        /// A soft sheen, like painted wood or roof tiles.
+        case satin
+        /// Car paint: a glossy clear coat over the color.
+        case gloss
+        /// Window glass: dark, smooth, and reflective.
+        case glass
+        /// Brushed metal.
+        case metal
+        /// Lit from within, like a lamp or headlight.
+        case glow
+    }
+
+    static func material(_ color: UIColor, _ finish: Finish = .matte) -> PhysicallyBasedMaterial {
+        var material = PhysicallyBasedMaterial()
+        material.baseColor = .init(tint: color)
+        switch finish {
+        case .matte:
+            material.roughness = 0.88
+        case .satin:
+            material.roughness = 0.52
+            material.specular = 0.6
+        case .gloss:
+            material.roughness = 0.32
+            material.clearcoat = 1.0
+            material.clearcoatRoughness = 0.04
+        case .glass:
+            material.roughness = 0.04
+            material.specular = 1.0
+            material.clearcoat = 1.0
+            material.clearcoatRoughness = 0.0
+        case .metal:
+            material.metallic = 1.0
+            material.roughness = 0.34
+        case .glow:
+            material.roughness = 0.5
+            material.emissiveColor = .init(color: color)
+            material.emissiveIntensity = 2.2
+        }
+        return material
     }
 
     static func box(_ size: SIMD3<Float>, _ color: UIColor, at position: SIMD3<Float>,
-                    cornerRadius: Float = 0) -> ModelEntity {
+                    cornerRadius: Float = 0, finish: Finish = .matte) -> ModelEntity {
         let entity = ModelEntity(mesh: .generateBox(size: size, cornerRadius: cornerRadius),
-                                 materials: [material(color)])
+                                 materials: [material(color, finish)])
         entity.position = position
         return entity
     }
 
-    static func cylinder(height: Float, radius: Float, _ color: UIColor, at position: SIMD3<Float>) -> ModelEntity {
-        let entity = ModelEntity(mesh: .generateCylinder(height: height, radius: radius), materials: [material(color)])
+    static func cylinder(height: Float, radius: Float, _ color: UIColor, at position: SIMD3<Float>,
+                         finish: Finish = .matte) -> ModelEntity {
+        let entity = ModelEntity(mesh: .generateCylinder(height: height, radius: radius), materials: [material(color, finish)])
         entity.position = position
         return entity
     }
 
-    static func cone(height: Float, radius: Float, _ color: UIColor, at position: SIMD3<Float>) -> ModelEntity {
-        let entity = ModelEntity(mesh: .generateCone(height: height, radius: radius), materials: [material(color)])
+    static func cone(height: Float, radius: Float, _ color: UIColor, at position: SIMD3<Float>,
+                     finish: Finish = .matte) -> ModelEntity {
+        let entity = ModelEntity(mesh: .generateCone(height: height, radius: radius), materials: [material(color, finish)])
         entity.position = position
         return entity
     }
 
-    static func sphere(radius: Float, _ color: UIColor, at position: SIMD3<Float>) -> ModelEntity {
-        let entity = ModelEntity(mesh: .generateSphere(radius: radius), materials: [material(color)])
+    static func sphere(radius: Float, _ color: UIColor, at position: SIMD3<Float>, finish: Finish = .matte) -> ModelEntity {
+        let entity = ModelEntity(mesh: .generateSphere(radius: radius), materials: [material(color, finish)])
         entity.position = position
         return entity
     }

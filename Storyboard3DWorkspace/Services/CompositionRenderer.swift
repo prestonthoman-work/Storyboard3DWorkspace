@@ -44,10 +44,12 @@ final class CompositionRenderer {
     ///   - background: The backdrop image, used if a frame-filling backdrop must be built instead.
     ///   - camera: Where to render from.
     ///   - lighting: The lighting mood.
+    ///   - look: Frame format and film grade applied after rendering.
     func render(scene: Entity, backdrop: ModelEntity, background: CGImage,
-                camera captureCamera: CaptureCamera, lighting: LightingPreset = .studio) async throws -> CGImage {
+                camera captureCamera: CaptureCamera, lighting: LightingPreset = .studio,
+                look: CaptureLook = .plain) async throws -> CGImage {
         try await render(snapshot: Self.snapshot(of: scene), backdrop: backdrop, backdropPose: nil,
-                         background: background, camera: captureCamera, lighting: lighting)
+                         background: background, camera: captureCamera, lighting: lighting, look: look)
     }
 
     /// A render-ready copy of the staged scene at its current world pose, minus
@@ -65,7 +67,8 @@ final class CompositionRenderer {
     ///   - snapshot: From `snapshot(of:)`. Not modified, so it can be rendered again.
     ///   - backdropPose: Where to put the backdrop; nil uses the live backdrop's position.
     func render(snapshot: Entity, backdrop: ModelEntity, backdropPose: Transform?, background: CGImage,
-                camera captureCamera: CaptureCamera, lighting: LightingPreset) async throws -> CGImage {
+                camera captureCamera: CaptureCamera, lighting: LightingPreset,
+                look: CaptureLook = .plain) async throws -> CGImage {
         guard let device = MTLCreateSystemDefaultDevice() else { throw RenderError.metalUnavailable }
 
         let renderer = try RealityRenderer()
@@ -122,7 +125,7 @@ final class CompositionRenderer {
             }
         }
 
-        return try Self.makeImage(from: texture)
+        return FilmFinisher.finish(try Self.makeImage(from: texture), look: look, lighting: lighting)
     }
 
     private static func stripInteraction(from entity: Entity) {
@@ -130,6 +133,7 @@ final class CompositionRenderer {
         entity.components.remove(InputTargetComponent.self)
         entity.components.remove(HoverEffectComponent.self)
         entity.components.remove(CollisionComponent.self)
+        entity.components.remove(ImageBasedLightReceiverComponent.self)
         for child in entity.children {
             stripInteraction(from: child)
         }
@@ -238,7 +242,7 @@ final class CompositionRenderer {
     /// any angle: a key light, a fill light, and a rim light from behind that separates
     /// the scene from the backdrop. The preset sets each light's color, strength, and
     /// direction.
-    private static func lights(for preset: LightingPreset, camera: CaptureCamera, center: SIMD3<Float>) -> [Entity] {
+    static func lights(for preset: LightingPreset, camera: CaptureCamera, center: SIMD3<Float>) -> [Entity] {
         let right = camera.orientation.act([1, 0, 0])
         var back = center - camera.position
         back.y = 0
@@ -266,7 +270,7 @@ final class CompositionRenderer {
     }
 
     /// The preset's sky-to-ground gradient, used as image-based lighting.
-    private static func makeEnvironment(for preset: LightingPreset) -> CGImage {
+    static func makeEnvironment(for preset: LightingPreset) -> CGImage {
         let width = 512
         let height = 256
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!

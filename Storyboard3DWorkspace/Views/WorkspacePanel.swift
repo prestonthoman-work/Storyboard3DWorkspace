@@ -30,6 +30,89 @@ struct WorkspacePanel: View {
                 PanelPage(title: "Capture", tip: CaptureTip()) { CapturePanel() }
             }
         }
+        .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
+            WorkspaceOrnament()
+                .padding(.top, 12)
+        }
+    }
+}
+
+/// Always within reach under the panel: undo and redo, a shutter that works from any
+/// tab, and quick toggles for previewing the lighting and snapping.
+private struct WorkspaceOrnament: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        @Bindable var appModel = appModel
+
+        HStack(spacing: 14) {
+            HStack(spacing: 4) {
+                Button("Undo", systemImage: "arrow.uturn.backward") { appModel.undo() }
+                    .disabled(!appModel.canUndo)
+                    .help("Undo")
+                Button("Redo", systemImage: "arrow.uturn.forward") { appModel.redo() }
+                    .disabled(!appModel.canRedo)
+                    .help("Redo")
+            }
+
+            ShutterButton()
+
+            HStack(spacing: 4) {
+                Toggle(isOn: $appModel.isLightingPreviewOn) {
+                    Label("Preview Lighting", systemImage: appModel.captureLighting.symbol)
+                }
+                .help("Light the scene in your space with the \(appModel.captureLighting.name) capture lighting")
+                Toggle(isOn: $appModel.isSnappingOn) {
+                    Label("Snapping", systemImage: "squareshape.split.3x3")
+                }
+                .help("Snap rotation to 15° and line objects up with each other")
+            }
+            .toggleStyle(.button)
+        }
+        .labelStyle(.iconOnly)
+        .buttonBorderShape(.circle)
+        .padding(10)
+        .glassBackgroundEffect(in: Capsule())
+    }
+}
+
+/// A camera-style shutter: a ring around a solid disc. During the self-timer it shows
+/// the count and cancels.
+private struct ShutterButton: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        Button {
+            if appModel.captureCountdown != nil {
+                appModel.cancelCapture()
+            } else {
+                appModel.startCapture()
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .strokeBorder(.white.opacity(0.9), lineWidth: 3)
+                if let remaining = appModel.captureCountdown {
+                    Text("\(remaining)")
+                        .font(.title2.weight(.bold).monospacedDigit())
+                        .contentTransition(.numericText(countsDown: true))
+                } else if appModel.isCapturing {
+                    ProgressView()
+                } else {
+                    Circle()
+                        .fill(.white)
+                        .padding(7)
+                }
+            }
+            .frame(width: 60, height: 60)
+            .contentShape(Circle())
+            .animation(.snappy, value: appModel.captureCountdown)
+        }
+        .buttonStyle(.plain)
+        .hoverEffect(.highlight)
+        .disabled(appModel.captureCountdown == nil && !appModel.canCapture)
+        .accessibilityLabel(appModel.captureCountdown == nil ? "Take photo" : "Cancel photo timer")
+        .help(appModel.captureCountdown == nil ? "Take a photo from where you're looking" : "Cancel")
     }
 }
 
@@ -52,7 +135,6 @@ private struct PanelPage<Content: View, PageTip: Tip>: View {
             .navigationTitle(title)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    UndoRedoButtons()
                     ToggleImmersiveSpaceButton()
                 }
             }
@@ -64,18 +146,4 @@ private struct PanelPage<Content: View, PageTip: Tip>: View {
     WorkspacePanel()
         .environment(AppModel())
         .frame(width: 500, height: 680)
-}
-
-/// Undo and Redo for edits to the base, objects, keyframes, and photos.
-private struct UndoRedoButtons: View {
-    @Environment(AppModel.self) private var appModel
-
-    var body: some View {
-        Button("Undo", systemImage: "arrow.uturn.backward") { appModel.undo() }
-            .disabled(!appModel.canUndo)
-            .help("Undo")
-        Button("Redo", systemImage: "arrow.uturn.forward") { appModel.redo() }
-            .disabled(!appModel.canRedo)
-            .help("Redo")
-    }
 }

@@ -22,6 +22,15 @@ struct Storyboard3DWorkspaceApp: App {
         GravitySurfaceComponent.registerComponent()
         ObjectGravitySystem.registerSystem()
         PlacedObjectComponent.registerComponent()
+        ScaleSpringComponent.registerComponent()
+        ScaleSpringSystem.registerSystem()
+        BaseSurfaceComponent.registerComponent()
+        SelectionHandleComponent.registerComponent()
+        SelectionFollowComponent.registerComponent()
+        SelectionFollowSystem.registerSystem()
+        TurntableGripComponent.registerComponent()
+        TurntableComponent.registerComponent()
+        TurntableSystem.registerSystem()
         try? Tips.configure()
     }
 
@@ -38,6 +47,14 @@ struct Storyboard3DWorkspaceApp: App {
         .defaultWindowPlacement { _, _ in
             WindowPlacement(.utilityPanel)
         }
+
+        // A large screening window for the storyboard.
+        WindowGroup(id: StoryboardViewer.windowID) {
+            StoryboardViewer()
+                .environment(appModel)
+        }
+        .windowStyle(.plain)
+        .defaultSize(width: 1280, height: 720)
 
         ImmersiveSpace(id: appModel.immersiveSpaceID) {
             ImmersiveView()

@@ -18,6 +18,9 @@ struct PhotoFrame<Placeholder: View>: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
+                    // Crossfade when a different photo is shown.
+                    .id(ObjectIdentifier(image))
+                    .transition(.opacity)
             } else {
                 placeholder
             }

@@ -5,7 +5,8 @@
 
 import SwiftUI
 
-/// Lighting, lens, and the shutter button, shared by the Animate and Capture tabs.
+/// Lighting, camera (lens, format, film grade), and the shutter button, shared by the
+/// Animate and Capture tabs.
 /// While the self-timer runs, the shutter becomes a Cancel button showing the count.
 struct CaptureControls: View {
     @Environment(AppModel.self) private var appModel
@@ -16,23 +17,37 @@ struct CaptureControls: View {
         @Bindable var appModel = appModel
 
         HStack(spacing: 12) {
-            Picker("Lighting", selection: $appModel.captureLighting) {
-                ForEach(LightingPreset.allCases) { preset in
-                    Label(preset.name, systemImage: preset.symbol).tag(preset)
+            Menu {
+                Picker("Lighting", selection: $appModel.captureLighting) {
+                    ForEach(LightingPreset.allCases) { preset in
+                        Label(preset.name, systemImage: preset.symbol).tag(preset)
+                    }
                 }
+                Toggle("Preview in Your Space", systemImage: "eye", isOn: $appModel.isLightingPreviewOn)
+            } label: {
+                Label(appModel.captureLighting.name, systemImage: appModel.captureLighting.symbol)
             }
-            .pickerStyle(.menu)
             .disabled(appModel.captureCountdown != nil)
             .help("Lighting for the captured photo")
 
-            Picker("Lens", selection: $appModel.captureLens) {
-                ForEach(CaptureLens.allCases) { lens in
-                    Text(lens.label).tag(lens)
+            Menu {
+                Picker("Lens", selection: $appModel.captureLens) {
+                    ForEach(CaptureLens.allCases) { lens in
+                        Text(lens.label).tag(lens)
+                    }
                 }
+                Picker("Format", selection: $appModel.captureLook.format) {
+                    ForEach(FrameFormat.allCases) { format in
+                        Text("\(format.name)  \(format.label)").tag(format)
+                    }
+                }
+                Toggle("Film Grade", systemImage: "film", isOn: $appModel.captureLook.isFilmGraded)
+            } label: {
+                Label("\(appModel.captureLens.label) · \(appModel.captureLook.format.label)", systemImage: "camera.aperture")
+                    .monospacedDigit()
             }
-            .pickerStyle(.menu)
             .disabled(appModel.captureCountdown != nil)
-            .help("Lens focal length, like a Blender camera")
+            .help("Lens, frame format, and film grade")
 
             Spacer(minLength: 0)
 
@@ -44,11 +59,14 @@ struct CaptureControls: View {
             } else {
                 Button(action: shutter) {
                     Label(shutterTitle, systemImage: "camera.fill")
+                        .symbolEffect(.bounce, value: appModel.photos.photos.count)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!appModel.canCapture)
+                .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
         }
+        .animation(.snappy, value: appModel.captureCountdown == nil)
     }
 }
 
@@ -57,6 +75,17 @@ struct CaptureStatusLine: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
+        ZStack(alignment: .leading) {
+            status
+                .id(appModel.captureStatus)
+                .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity),
+                                        removal: .opacity))
+        }
+        .animation(.snappy, value: appModel.captureStatus)
+    }
+
+    @ViewBuilder
+    private var status: some View {
         switch appModel.captureStatus {
         case .attached(let number):
             Label("Added to keyframe \(number).", systemImage: "checkmark.circle.fill")

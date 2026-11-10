@@ -20,6 +20,8 @@ enum ProjectStore {
         var modified: Date
         /// The photo shown for this project in the list.
         var coverPhotoID: UUID?
+        /// Number of keyframes (shots), for the gallery. Optional for older projects.
+        var shotCount: Int?
     }
 
     struct SavedProject: Codable {
@@ -34,6 +36,8 @@ enum ProjectStore {
         var state: ProjectState
         var captureLens: CaptureLens
         var captureLighting: LightingPreset?
+        /// Optional so projects saved before looks existed still load.
+        var captureLook: CaptureLook?
         var backdrop: Backdrop?
     }
 
@@ -194,7 +198,7 @@ enum ProjectStore {
             return CapturedPhoto(id: entry.id, takenAt: entry.takenAt, lens: entry.lens,
                                  jpegData: jpeg, thumbnail: thumbnail, assignment: entry.assignment,
                                  camera: entry.camera, lighting: entry.lighting ?? .studio,
-                                 backdropPose: entry.backdropPose)
+                                 look: entry.look ?? .plain, backdropPose: entry.backdropPose)
         }
 
         let backdropImage = saved.backdrop?.fileID

@@ -14,9 +14,13 @@ struct ObjectsPanel: View {
         @Bindable var appModel = appModel
 
         VStack(alignment: .leading, spacing: 16) {
+          ScrollView {
+           VStack(alignment: .leading, spacing: 16) {
+            CatalogTray()
+
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
-                    TextField("Describe an object, e.g. red house", text: $appModel.objectPrompt)
+                    TextField("Or describe one, e.g. red house", text: $appModel.objectPrompt)
                         .textFieldStyle(.roundedBorder)
                         .submitLabel(.go)
                         .onSubmit(generate)
@@ -48,18 +52,21 @@ struct ObjectsPanel: View {
             }
 
             if appModel.objects.isEmpty {
-                Text("Generate objects one at a time, like houses, trees, and shrubs, and arrange them on the base.")
+                Text("Tap a card above, or describe an object, to add it to the base. Then pinch and drag to arrange it.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else {
                 objectList
                 selectionActions
             }
+           }
+          }
+          .scrollIndicators(.hidden)
 
             Spacer(minLength: 0)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Pinch and drag an object to move it. Turn your hand to rotate. Use both hands to resize.")
+                Text("Pinch and drag an object to move it. Drag the ring's knob to turn it, or the corner handle to resize.")
                 if appModel.isSampleMode {
                     Label("Sample mode: no AI service is set up, so prompts are matched to built-in objects.",
                           systemImage: "info.circle")
@@ -178,5 +185,73 @@ private struct ColorSwatches: View {
         .accessibilityLabel(label)
         .accessibilityAddTraits(selected == name ? .isSelected : [])
         .help(label)
+    }
+}
+
+/// Every built-in object as a card with a studio render. Tap one to place it.
+private struct CatalogTray: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Library")
+                .font(.headline)
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(SampleObjectCatalog.Kind.allCases, id: \.self) { kind in
+                        CatalogCard(kind: kind, image: appModel.catalogThumbnails.images[kind]) {
+                            appModel.placeCatalogObject(kind)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .scrollIndicators(.hidden)
+            .scrollClipDisabled()
+        }
+        .onAppear { appModel.catalogThumbnails.loadIfNeeded() }
+    }
+}
+
+private struct CatalogCard: View {
+    let kind: SampleObjectCatalog.Kind
+    let image: UIImage?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 18)
+                        .fill(LinearGradient(colors: [.white.opacity(0.14), .white.opacity(0.04)],
+                                             startPoint: .top, endPoint: .bottom))
+                    if let image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .padding(6)
+                            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                    } else {
+                        ProgressView()
+                    }
+                }
+                .frame(width: 84, height: 84)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18)
+                        .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                }
+                .animation(.smooth, value: image != nil)
+
+                Text(kind.name)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .frame(width: 84)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 18))
+        }
+        .buttonStyle(.plain)
+        .hoverEffect()
+        .accessibilityLabel("Add \(kind.name)")
+        .help("Add a \(kind.name.lowercased()) to the base")
     }
 }

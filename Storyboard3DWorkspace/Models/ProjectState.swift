@@ -18,6 +18,8 @@ struct ProjectState: Codable, Equatable {
         /// Nil for a template; otherwise who generated it.
         var generatedBy: ModelSource?
         var diameterCentimeters: Double
+        /// How far the base is spun, in radians. Optional so older projects still load.
+        var spinRadians: Float?
     }
 
     struct Object: Codable, Equatable {
@@ -46,6 +48,7 @@ struct ProjectState: Codable, Equatable {
         var camera: CaptureCamera?
         var lighting: LightingPreset?
         var backdropPose: CodableTransform?
+        var look: CaptureLook?
     }
 
     var base: Base

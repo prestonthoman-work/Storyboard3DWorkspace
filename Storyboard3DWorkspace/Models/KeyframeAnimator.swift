@@ -82,6 +82,12 @@ final class KeyframeAnimator {
         return id
     }
 
+    func moveKeyframe(_ id: Keyframe.ID, to index: Int) {
+        pause()
+        timeline.move(id, to: index)
+        if let selected = selectedKeyframe { playhead = selected.time }
+    }
+
     func select(_ keyframe: Keyframe) {
         pause()
         selectedKeyframeID = keyframe.id

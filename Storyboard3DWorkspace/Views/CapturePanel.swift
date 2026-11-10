@@ -13,7 +13,12 @@ struct CapturePanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     selectedPhoto
+                        .animation(.smooth(duration: 0.3), value: appModel.selectedLibraryPhoto?.id)
+                    if !appModel.animator.timeline.keyframes.isEmpty {
+                        ShotList()
+                    }
                     PhotoLibraryGrid()
+                        .animation(.snappy, value: appModel.photos.photos.map(\.id))
                 }
             }
             .scrollIndicators(.hidden)

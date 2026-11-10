@@ -11,7 +11,7 @@ import TipKit
 struct BaseTip: Tip {
     var title: Text { Text("Your stage") }
     var message: Text? {
-        Text("The base sits on your table. Pick a template and size here, or use Find Table to move it to another table.")
+        Text("The base sits on your table. Pinch its brass-banded edge and swipe to spin it. Pick a template and size here, or use Find Table to move it to another table.")
     }
     var image: Image? { Image(systemName: "square.3.layers.3d.down.right") }
 }
@@ -19,7 +19,7 @@ struct BaseTip: Tip {
 struct ObjectsTip: Tip {
     var title: Text { Text("Build your scene") }
     var message: Text? {
-        Text("Generate objects one at a time, then pinch and drag to arrange them. Released objects fall onto the base or stack on each other.")
+        Text("Tap a card in the Library or describe an object, then pinch and drag to arrange it. Select an object to get handles for turning and resizing it, and a toolbar right above it.")
     }
     var image: Image? { Image(systemName: "cube") }
 }

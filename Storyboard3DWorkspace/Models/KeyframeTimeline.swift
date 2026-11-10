@@ -59,6 +59,17 @@ struct KeyframeTimeline {
         }
     }
 
+    /// Moves a keyframe to a new position in the order; every keyframe is re-timed so
+    /// they stay evenly spaced.
+    mutating func move(_ id: Keyframe.ID, to index: Int) {
+        guard let from = keyframes.firstIndex(where: { $0.id == id }) else { return }
+        let keyframe = keyframes.remove(at: from)
+        keyframes.insert(keyframe, at: min(max(index, 0), keyframes.count))
+        for position in keyframes.indices {
+            keyframes[position].time = TimeInterval(position) * Self.spacing
+        }
+    }
+
     func keyframe(_ id: Keyframe.ID?) -> Keyframe? {
         keyframes.first { $0.id == id }
     }

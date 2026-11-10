@@ -119,6 +119,7 @@ class AppModel {
             photos.load(loaded.photos, primaries: loaded.saved.state.primaryPhotoIDs)
             captureLens = loaded.saved.captureLens
             captureLighting = loaded.saved.captureLighting ?? .studio
+            captureLook = loaded.saved.captureLook ?? .standard
             isRestoring = false
             restore(loaded.saved.state)
             if let backdrop = loaded.saved.backdrop, backdrop.source != .builtInSky, let image = loaded.backdropImage {
@@ -148,6 +149,7 @@ class AppModel {
         isRestoring = true
         captureLens = .standard
         captureLighting = .studio
+        captureLook = .standard
         isRestoring = false
     }
 
@@ -164,6 +166,9 @@ class AppModel {
     @ObservationIgnored private var searchTimeout: Task<Void, Never>?
 
     func workspaceDidOpen() async {
+        SceneFeedback.isEnabled = true
+        SoundEffects.preload()
+        updateLightingPreview()
         let tracking = SpatialTrackingService.shared
         tablePlacement = .searching
         await tracking.start()
@@ -187,6 +192,8 @@ class AppModel {
     }
 
     func workspaceDidClose() {
+        SceneFeedback.isEnabled = false
+        Task { await workspace.setLightingPreview(nil, camera: viewerCamera()) }
         cancelCapture()
         saveNow()
         refreshProjects()
@@ -361,18 +368,35 @@ class AppModel {
 
         do {
             let model = try await generationService.generateObject(prompt: prompt)
-            checkpoint()
-            let id = ObjectID()
-            workspace.addObject(model.entity, name: model.displayName, id: id)
-            objects.append(ObjectSummary(id: id, name: model.displayName, source: model.source, recipe: model.recipe))
-            selectObject(id)
-            objectNote = model.note
+            place(model)
             objectPrompt = ""
-            documentChanged()
-            sceneEdited()
         } catch {
             objectError = error.localizedDescription
         }
+    }
+
+    /// Renders of each built-in object for the library tray.
+    let catalogThumbnails = CatalogThumbnails()
+
+    /// Places a built-in object straight from the library tray.
+    func placeCatalogObject(_ kind: SampleObjectCatalog.Kind) {
+        animator.pause()
+        objectError = nil
+        place(GeneratedModel(displayName: kind.name, source: .sample,
+                             recipe: .sampleObject(kind: kind.rawValue, color: nil),
+                             entity: SampleObjectCatalog.make(kind, tint: nil), note: nil))
+    }
+
+    private func place(_ model: GeneratedModel) {
+        checkpoint()
+        let id = ObjectID()
+        let object = workspace.addObject(model.entity, name: model.displayName, id: id)
+        SceneFeedback.appear(object)
+        objects.append(ObjectSummary(id: id, name: model.displayName, source: model.source, recipe: model.recipe))
+        selectObject(id)
+        objectNote = model.note
+        documentChanged()
+        sceneEdited()
     }
 
     func duplicateSelectedObject() {
@@ -380,7 +404,7 @@ class AppModel {
         animator.pause()
         checkpoint()
         let id = ObjectID()
-        workspace.duplicate(object, id: id)
+        SceneFeedback.appear(workspace.duplicate(object, id: id))
         objects.append(ObjectSummary(id: id, name: summary.name, source: summary.source, recipe: summary.recipe))
         selectObject(id)
         documentChanged()
@@ -391,7 +415,7 @@ class AppModel {
         guard let id = selectedObjectID, let object = workspace.object(withID: id) else { return }
         animator.pause()
         checkpoint()
-        workspace.remove(object)
+        workspace.remove(object, animated: true)
         objects.removeAll { $0.id == id }
         selectObject(nil)
         // The object leaves every keyframe it was in, so those keyframes have changed.
@@ -413,6 +437,7 @@ class AppModel {
 
         checkpoint()
         workspace.replaceContent(of: object, with: content)
+        SceneFeedback.appear(object)
         let name = summary.name == summary.recipe.defaultName ? (recipe.defaultName ?? summary.name) : summary.name
         object.name = name
         updateSummary(summary.id) { ObjectSummary(id: $0.id, name: name, source: $0.source, recipe: recipe) }
@@ -435,6 +460,7 @@ class AppModel {
             guard let object = workspace.object(withID: summary.id) else { return }
             checkpoint()
             workspace.replaceContent(of: object, with: model.entity)
+            SceneFeedback.appear(object)
             object.name = model.displayName
             updateSummary(summary.id) { ObjectSummary(id: $0.id, name: model.displayName, source: model.source, recipe: model.recipe) }
             workspace.showSelection(on: object)
@@ -469,6 +495,38 @@ class AppModel {
         if let object = workspace.object(containing: entity) {
             selectObject(workspace.objectID(of: object))
         }
+    }
+
+    /// Snap rotation to 15° steps and line objects up with each other while arranging.
+    var isSnappingOn: Bool = UserDefaults.standard.object(forKey: "isSnappingOn") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(isSnappingOn, forKey: "isSnappingOn") }
+    }
+
+    /// A selection handle moved to `point` (world space).
+    func dragHandle(_ handle: Entity, to point: SIMD3<Float>) {
+        if workspace.dragHandle(handle, to: point, snapping: isSnappingOn) != nil {
+            animator.pause()
+            checkpoint()
+        }
+    }
+
+    /// A pinch on the base's edge moved to `point` (world space): spin the base.
+    func dragTurntable(to point: SIMD3<Float>) {
+        if workspace.dragTurntable(to: point) {
+            animator.pause()
+            checkpoint()
+        }
+    }
+
+    func endTurntableDrag() {
+        workspace.endTurntableDrag()
+        // Saves once any coasting stops.
+        sceneEdited()
+    }
+
+    func endHandleDrag() {
+        workspace.endHandleDrag()
+        sceneEdited()
     }
 
     /// The user grabbed an object: stop playback so it doesn't fight their hands.
@@ -559,7 +617,7 @@ class AppModel {
 
     // MARK: Capture
 
-    enum CaptureStatus: Equatable {
+    enum CaptureStatus: Hashable {
         case attached(keyframeNumber: Int)
         case libraryOnly
         case retaken(keyframeNumber: Int)
@@ -579,7 +637,35 @@ class AppModel {
     @ObservationIgnored private var countdownTask: Task<Void, Never>?
 
     var captureLighting: LightingPreset = .studio {
-        didSet { documentChanged() }
+        didSet {
+            documentChanged()
+            if captureLighting != oldValue { updateLightingPreview() }
+        }
+    }
+
+    /// Light the diorama in the headset with the capture lighting, instead of the room's.
+    var isLightingPreviewOn: Bool = UserDefaults.standard.bool(forKey: "isLightingPreviewOn") {
+        didSet {
+            UserDefaults.standard.set(isLightingPreviewOn, forKey: "isLightingPreviewOn")
+            updateLightingPreview()
+        }
+    }
+
+    /// Applies (or removes) the in-headset lighting preview to match the current settings.
+    func updateLightingPreview() {
+        let preset = isLightingPreviewOn && immersiveSpaceState == .open ? captureLighting : nil
+        let camera = viewerCamera()
+        Task { await workspace.setLightingPreview(preset, camera: camera) }
+    }
+
+    /// A camera where the viewer is standing, looking where they look.
+    func viewerCamera() -> CaptureCamera {
+        if let head = SpatialTrackingService.shared.viewerTransform {
+            return .level(fromHead: head, lens: captureLens)
+        }
+        // No head tracking (such as in Simulator): look at the base from a standing position.
+        return .looking(from: SpatialTrackingService.fallbackViewerPosition,
+                        at: workspace.baseAnchor.position(relativeTo: nil), lens: captureLens)
     }
 
     /// When a keyframe changes, re-render its photos from their saved angles instead of
@@ -591,7 +677,16 @@ class AppModel {
 
     var captureLens: CaptureLens = .standard {
         didSet {
-            workspace.setViewfinderLens(captureLens)
+            workspace.setViewfinder(lens: captureLens, format: captureLook.format)
+            documentChanged()
+        }
+    }
+
+    /// Frame format and film grade for new captures.
+    var captureLook: CaptureLook = .standard {
+        didSet {
+            guard captureLook != oldValue else { return }
+            workspace.setViewfinder(lens: captureLens, format: captureLook.format)
             documentChanged()
         }
     }
@@ -631,6 +726,7 @@ class AppModel {
         countdownTask = Task { [weak self] in
             for remaining in [3, 2, 1] {
                 self?.captureCountdown = remaining
+                self?.workspace.playInterfaceSound(.tick, gain: -12)
                 try? await Task.sleep(for: .seconds(1))
                 if Task.isCancelled { return }
             }
@@ -662,15 +758,10 @@ class AppModel {
         let target = captureTarget
         if target != nil { autoSaveSelectedKeyframe() }
 
-        let tracking = SpatialTrackingService.shared
-        let camera: CaptureCamera
-        if let head = tracking.viewerTransform {
-            camera = .level(fromHead: head, lens: captureLens)
-        } else {
-            // No head tracking (such as in Simulator): look at the base from a standing position.
-            camera = .looking(from: SpatialTrackingService.fallbackViewerPosition,
-                              at: workspace.baseAnchor.position(relativeTo: nil), lens: captureLens)
-        }
+        let camera = viewerCamera()
+
+        workspace.flashViewfinder()
+        workspace.playInterfaceSound(.shutter, gain: -4)
 
         // Remember where the backdrop was, so this exact shot can be rendered again later.
         let backdropPose = CodableTransform(Transform(matrix: workspace.backdrop.transformMatrix(relativeTo: nil)))
@@ -681,10 +772,12 @@ class AppModel {
                 backdropPose: nil,
                 background: background.image,
                 camera: camera,
-                lighting: captureLighting
+                lighting: captureLighting,
+                look: captureLook
             )
             guard let photo = photos.add(image, lens: captureLens, keyframe: target?.keyframe.id, camera: camera,
-                                         lighting: captureLighting, backdropPose: backdropPose) else {
+                                         lighting: captureLighting, look: captureLook,
+                                         backdropPose: backdropPose) else {
                 captureStatus = .failed("The capture couldn't be saved.")
                 return
             }
@@ -818,7 +911,7 @@ class AppModel {
             guard let camera = photo.camera, photos.photo(photo.id)?.keyframeID == photo.keyframeID else { continue }
             guard let image = try? await CompositionRenderer().render(
                 snapshot: snapshot, backdrop: workspace.backdrop, backdropPose: photo.backdropPose?.transform,
-                background: background.image, camera: camera, lighting: photo.lighting),
+                background: background.image, camera: camera, lighting: photo.lighting, look: photo.look),
                   let replacement = photos.replace(photo, with: image)
             else { continue }
             updated += 1
@@ -852,8 +945,9 @@ class AppModel {
         do {
             let image = try await CompositionRenderer().render(
                 snapshot: snapshot, backdrop: workspace.backdrop, backdropPose: photo.backdropPose?.transform,
-                background: background.image, camera: camera, lighting: captureLighting)
-            guard let replacement = photos.replace(photo, with: image, camera: camera, lighting: captureLighting) else { return }
+                background: background.image, camera: camera, lighting: captureLighting, look: captureLook)
+            guard let replacement = photos.replace(photo, with: image, camera: camera, lighting: captureLighting,
+                                                   look: captureLook) else { return }
             focusedKeyframePhotoID = replacement.id
             selectedLibraryPhotoID = replacement.id
             captureStatus = .retaken(keyframeNumber: number)
@@ -872,6 +966,17 @@ class AppModel {
         }
         if focusedKeyframePhotoID.flatMap({ photos.photo($0) })?.keyframeID == nil { focusedKeyframePhotoID = nil }
         exportedFile = nil
+    }
+
+    /// Reorders the shots. Photos stay with their keyframes.
+    func moveKeyframe(_ id: Keyframe.ID, to index: Int) {
+        let keyframes = animator.timeline.keyframes
+        guard let current = keyframes.firstIndex(where: { $0.id == id }), keyframes.indices.contains(index),
+              current != index else { return }
+        checkpoint()
+        animator.moveKeyframe(id, to: index)
+        exportedFile = nil
+        documentChanged()
     }
 
     func deleteSelectedKeyframe() {
@@ -1069,13 +1174,14 @@ class AppModel {
         let generatedBy: ModelSource? = if case .generated(let source) = base.origin { source } else { nil }
 
         return ProjectState(
-            base: .init(name: base.name, recipe: baseRecipe, generatedBy: generatedBy, diameterCentimeters: baseWidth),
+            base: .init(name: base.name, recipe: baseRecipe, generatedBy: generatedBy, diameterCentimeters: baseWidth,
+                        spinRadians: workspace.baseSpin),
             objects: objectStates,
             keyframes: animator.timeline.keyframes.map(ProjectState.KeyframeState.init),
             selectedKeyframeID: animator.selectedKeyframeID,
             photos: photos.photos.map {
                 .init(id: $0.id, takenAt: $0.takenAt, lens: $0.lens, assignment: $0.assignment,
-                      camera: $0.camera, lighting: $0.lighting, backdropPose: $0.backdropPose)
+                      camera: $0.camera, lighting: $0.lighting, backdropPose: $0.backdropPose, look: $0.look)
             },
             primaryPhotoIDs: photos.primaryPhotoIDs
         )
@@ -1102,6 +1208,7 @@ class AppModel {
             base = BaseSummary(name: state.base.name, origin: .template(template))
         }
         baseWidth = state.base.diameterCentimeters
+        workspace.setBaseSpin(state.base.spinRadians ?? 0)
 
         // Objects: remove ones that shouldn't exist, rebuild missing ones, then pose all.
         let wanted = Set(state.objects.map(\.id))
@@ -1170,11 +1277,13 @@ class AppModel {
         // The list shows the first keyframe's primary photo, else the newest photo.
         info.coverPhotoID = animator.timeline.keyframes.lazy.compactMap { self.photos.primaryPhoto(for: $0.id)?.id }.first
             ?? photos.photos.last?.id
+        info.shotCount = animator.timeline.keyframes.count
         let backdrop = background.map {
             ProjectStore.SavedProject.Backdrop(name: $0.name, source: $0.source, fileID: backdropFileID)
         }
         let project = ProjectStore.SavedProject(state: currentState(), captureLens: captureLens,
-                                                captureLighting: captureLighting, backdrop: backdrop)
+                                                captureLighting: captureLighting, captureLook: captureLook,
+                                                backdrop: backdrop)
         do {
             try ProjectStore.save(info, project: project, photos: photos.photos,
                                   backdropImage: backdropFileID == nil ? nil : background?.image)

@@ -23,7 +23,7 @@ struct AnimatePanel: View {
                     } else {
                         SelectedKeyframeShot()
                         transport
-                        StoryboardStrip()
+                        ShotList()
                     }
                 }
             }
@@ -188,85 +188,6 @@ private struct SelectedKeyframeShot: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
-    }
-}
-
-/// Every keyframe as a card showing its primary photo, in timeline order.
-private struct StoryboardStrip: View {
-    @Environment(AppModel.self) private var appModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Storyboard")
-                .font(.headline)
-            ScrollView(.horizontal) {
-                HStack(spacing: 10) {
-                    ForEach(Array(appModel.animator.timeline.keyframes.enumerated()), id: \.element.id) { index, keyframe in
-                        StoryboardCard(
-                            number: index + 1,
-                            primary: appModel.photos.primaryPhoto(for: keyframe.id),
-                            photoCount: appModel.photos.photos(for: keyframe.id).count,
-                            isSelected: keyframe.id == appModel.animator.selectedKeyframeID
-                        ) {
-                            appModel.selectKeyframe(keyframe)
-                        }
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            .scrollIndicators(.hidden)
-        }
-    }
-}
-
-private struct StoryboardCard: View {
-    let number: Int
-    let primary: CapturedPhoto?
-    let photoCount: Int
-    let isSelected: Bool
-    let action: () -> Void
-
-    private let width: CGFloat = 104
-
-    var body: some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 4) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(.quaternary)
-                    if let primary {
-                        Image(uiImage: primary.thumbnail)
-                            .resizable()
-                            .aspectRatio(16 / 9, contentMode: .fill)
-                    } else {
-                        Image(systemName: "camera")
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .frame(width: width, height: width * 9 / 16)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(isSelected ? Color.white : .clear, lineWidth: 3)
-                }
-
-                HStack {
-                    Text("\(number)")
-                        .font(.caption.weight(.semibold))
-                    Spacer()
-                    if photoCount > 1 {
-                        Label("\(photoCount)", systemImage: "photo.stack")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: width)
-            }
-        }
-        .buttonStyle(.plain)
-        .hoverEffect()
-        .accessibilityLabel("Keyframe \(number), \(photoCount == 0 ? "no photos" : "\(photoCount) photos")")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
