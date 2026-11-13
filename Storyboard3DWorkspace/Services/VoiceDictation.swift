@@ -61,9 +61,11 @@ final class VoiceDictation {
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
             input.removeTap(onBus: 0)
-            // Deprecated in visionOS 27 in favor of a throwing variant that has no Swift
-            // overlay in this SDK yet; switch once it does.
-            input.installTap(onBus: 0, bufferSize: 1024, format: format, block: Self.makeTap(for: request))
+            // The throwing replacement for the deprecated installTap. It's NS_REFINED_FOR_SWIFT
+            // with no Swift overlay in this SDK, so it imports as "__installTap" with a leftover
+            // `error: ()` label; switch to the overlay's name once Apple ships it.
+            try input.__installTap(onBus: 0, bufferSize: 1024, format: format, error: (),
+                                   block: Self.makeTap(for: request))
             engine.prepare()
             try engine.start()
 
