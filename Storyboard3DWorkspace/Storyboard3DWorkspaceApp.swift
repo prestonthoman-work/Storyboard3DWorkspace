@@ -31,6 +31,7 @@ struct Storyboard3DWorkspaceApp: App {
         IKHandleComponent.registerComponent()
         IKHandleFollowComponent.registerComponent()
         IKHandleFollowSystem.registerSystem()
+        StudioTurntableComponent.registerComponent()
         ScaleSpringComponent.registerComponent()
         ScaleSpringSystem.registerSystem()
         BaseSurfaceComponent.registerComponent()
@@ -72,6 +73,14 @@ struct Storyboard3DWorkspaceApp: App {
                 WindowPlacement(.utilityPanel)
             }
         }
+
+        // A volume for posing the selected character at a comfortable size.
+        WindowGroup(id: PoseStudioView.windowID) {
+            PoseStudioView()
+                .environment(appModel)
+        }
+        .windowStyle(.volumetric)
+        .defaultSize(width: 0.7, height: 0.85, depth: 0.7, in: .meters)
 
         // A large screening window for the storyboard.
         WindowGroup(id: StoryboardViewer.windowID) {

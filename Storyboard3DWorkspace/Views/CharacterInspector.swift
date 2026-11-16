@@ -73,6 +73,7 @@ private struct CharacterShapeControls: View {
 
 private struct PoseControls: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(\.openWindow) private var openWindow
     @State private var isNamingPose = false
     @State private var poseName = ""
 
@@ -128,6 +129,17 @@ private struct PoseControls: View {
                 StatusMessage(error, kind: .error)
             }
 
+            if !appModel.isPoseStudioOpen {
+                Button {
+                    openWindow(id: PoseStudioView.windowID)
+                } label: {
+                    Label("Open Pose Studio", systemImage: "rectangle.3.group.bubble")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .help("Pose this character at a large size in its own window, with your hands")
+            }
+
             BodyPartPicker()
 
             if let joint = appModel.selectedJoint {
@@ -155,7 +167,7 @@ private struct PoseControls: View {
 
 /// Every joint, grouped by body region, as large tap targets. Also selectable by tapping
 /// the body itself in the scene.
-private struct BodyPartPicker: View {
+struct BodyPartPicker: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
@@ -204,7 +216,7 @@ private struct BodyPartPicker: View {
 }
 
 /// Angles for the selected joint, or placing its hand or foot.
-private struct JointEditor: View {
+struct JointEditor: View {
     @Environment(AppModel.self) private var appModel
     let joint: Joint
 

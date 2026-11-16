@@ -473,3 +473,102 @@ struct CharacterAppTests {
         #expect(try await service.generateObject(prompt: "a tree by a man").recipe.characterKind == nil)
     }
 }
+
+/// The Pose Studio: a large copy of the selected character, posed with drags.
+@MainActor
+@Suite(.serialized)
+struct PoseStudioTests {
+    init() throws {
+        let storage = FileManager.default.temporaryDirectory.appending(path: "PoseStudioTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+        ProjectStore.storageOverride = storage
+    }
+
+    @Test func swingingFollowsTheDragFromWhereItStarted() {
+        // Dragging the hanging right arm from straight down to straight forward raises it forward.
+        let raised = CharacterKinematics.swing(.rightShoulder, startingAt: .zero, from: [0, -1, 0], to: [0, 0, 1])
+        #expect(abs(raised.bend - 90) < 0.5 && abs(raised.side) < 0.5)
+        // The same motion starting partway through only adds the difference.
+        let start = JointRotation(bend: 30)
+        let more = CharacterKinematics.swing(.rightShoulder, startingAt: start, from: [0, -1, 0], to: [0, -0.7071, 0.7071])
+        #expect(abs(more.bend - 75) < 0.5)
+        // A hinge only bends, and only within its limits.
+        let elbow = CharacterKinematics.swing(.leftElbow, startingAt: .zero, from: [0, -1, 0], to: [1, 0, -1])
+        #expect(elbow.twist == 0 && elbow.side == 0 && elbow.bend >= 0)
+        #expect(CharacterKinematics.swing(.leftKnee, startingAt: .zero, from: [0, -1, 0], to: [0, -1, 0]) == .zero)
+    }
+
+    @Test func theStudioMirrorsTheSelectedCharacterAtALargeSize() async throws {
+        let app = AppModel()
+        await app.createProject()
+        app.placeCharacter(.mannequin)
+        app.applyPreset(.waving)
+        app.isPoseStudioOpen = true
+        app.setCharacterEditMode(.pose)
+        app.updatePoseStudio()
+
+        let figure = try #require(app.poseStudio.character)
+        let shoulder = try #require(app.poseStudio.jointEntity(.rightShoulder))
+        #expect(shoulder.orientation == CharacterKinematics.rotation(PosePreset.waving.pose[.rightShoulder], for: .rightShoulder))
+        // About 55 cm tall, standing on the studio floor.
+        var bounds: BoundingBox?
+        func visit(_ entity: Entity) {
+            if entity.components.has(BodyPartComponent.self) {
+                let part = entity.visualBounds(relativeTo: app.poseStudio.root)
+                bounds = bounds.map { $0.union(part) } ?? part
+            }
+            entity.children.forEach(visit)
+        }
+        visit(figure)
+        let size = try #require(bounds)
+        #expect(size.extents.y > 0.55 && size.extents.y < 0.72) // a little taller than standing, with the hand raised
+        #expect(abs(size.min.y) < 0.005)
+
+        // Recoloring rebuilds the studio figure; deselecting clears it.
+        app.recolorSelectedObject("blue")
+        app.updatePoseStudio()
+        #expect(app.poseStudio.character !== figure)
+        app.selectObject(nil)
+        app.updatePoseStudio()
+        #expect(app.poseStudio.character == nil)
+    }
+
+    @Test func draggingInTheStudioPosesTheSceneCharacterAsOneUndoStep() async throws {
+        let app = AppModel()
+        await app.createProject()
+        app.placeCharacter(.mannequin)
+        let object = try #require(app.selectedObjectID.flatMap { app.workspace.object(withID: $0) })
+        app.isPoseStudioOpen = true
+        app.setCharacterEditMode(.pose)
+        app.updatePoseStudio()
+
+        // Grab the left forearm area and drag it forward, in several steps.
+        let studio = app.poseStudio
+        let elbow = try #require(studio.jointEntity(.leftElbow))
+        let start = elbow.position(relativeTo: nil) + [0, -0.06, 0]
+        for step in 1...5 {
+            let now = start + [0, Float(step) * 0.012, Float(step) * 0.012]
+            let from = try #require(studio.direction(from: .leftShoulder, to: start))
+            let to = try #require(studio.direction(from: .leftShoulder, to: now))
+            app.swingJoint(.leftShoulder, from: from, to: to)
+            app.updatePoseStudio()
+        }
+        app.endPoseDrag()
+        let pose = try #require(app.workspace.characterPose(of: object))
+        #expect(pose[.leftShoulder].bend > 10)
+        #expect(app.selectedJoint == .leftShoulder)
+        #expect(!app.isPoseDragging)
+
+        // Place the right hand with the reach target.
+        app.selectJoint(.rightWrist)
+        app.poseTool = .reach
+        app.dragReach(.rightArm, to: [-0.1, -0.2, 0.3])
+        app.endPoseDrag()
+        #expect(simd_distance(try #require(app.reach(of: .rightArm)), [0.1, -0.2, 0.3]) < 0.01)
+
+        app.undo()
+        #expect(app.workspace.characterPose(of: object)?[.rightElbow].bend == 0)
+        app.undo()
+        #expect(app.workspace.characterPose(of: object)?.isNeutral == true)
+    }
+}

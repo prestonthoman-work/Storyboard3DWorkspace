@@ -205,7 +205,8 @@ enum CharacterBuilder {
     }
 
     /// Shows or hides the joint markers, highlighting the selected joint.
-    static func showMarkers(_ isVisible: Bool, selected: Joint?, in content: Entity) {
+    /// - Parameter size: Marker size relative to the miniature's. Smaller on the large studio figure.
+    static func showMarkers(_ isVisible: Bool, selected: Joint?, in content: Entity, size: Float = 1) {
         for (joint, entity) in joints(in: content) {
             guard let marker = entity.children.first(where: { $0.name == markerName }) as? ModelEntity else { continue }
             marker.isEnabled = isVisible
@@ -213,7 +214,7 @@ enum CharacterBuilder {
             var material = UnlitMaterial(color: isSelected ? UIColor(red: 0.35, green: 0.85, blue: 1, alpha: 1) : .white)
             material.blending = .transparent(opacity: .init(floatLiteral: isSelected ? 1 : 0.7))
             marker.model?.materials = [material]
-            marker.scale = SIMD3(repeating: isSelected ? 1.45 : 1)
+            marker.scale = SIMD3(repeating: (isSelected ? 1.45 : 1) * size)
         }
     }
 

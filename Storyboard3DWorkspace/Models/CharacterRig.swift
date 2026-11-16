@@ -401,13 +401,31 @@ enum CharacterKinematics {
         let m = simd_matrix3x3(rotation)
         // m = Rz(side) · Rx(bend) · Ry(twist); see the matrix product's entries.
         let bend = asin(min(max(m.columns.1.z, -1), 1))
-        let twist = atan2(-m.columns.0.z, m.columns.2.z)
-        let side = atan2(-m.columns.1.x, m.columns.1.y)
+        var twist = atan2(-m.columns.0.z, m.columns.2.z)
+        var side = atan2(-m.columns.1.x, m.columns.1.y)
+        if abs(m.columns.1.z) > 0.9995 {
+            // Bent straight forward or back, twist and side turn about the same axis. Put it all
+            // in side, so angles don't swap back and forth while dragging through this point.
+            twist = 0
+            side = atan2(m.columns.0.y, m.columns.0.x)
+        }
         let toDegrees = 180 / Float.pi
         let signs = joint.signs
         return JointRotation(bend: bend * toDegrees * (signs.x == 0 ? 0 : signs.x),
                              twist: twist * toDegrees * (signs.y == 0 ? 0 : signs.y),
                              side: side * toDegrees * (signs.z == 0 ? 0 : signs.z))
+    }
+
+    /// Turns a joint so its segment follows a drag. `from` is where the drag started and `to`
+    /// is where it is now, both as directions from the joint, in its parent's space. The
+    /// turn is relative to `start` (the joint's angles when the drag began), so the segment
+    /// doesn't jump to point at the spot that was pinched. Kept within the joint's limits; a
+    /// hinge such as an elbow only bends.
+    static func swing(_ joint: Joint, startingAt start: JointRotation,
+                      from: SIMD3<Float>, to: SIMD3<Float>) -> JointRotation {
+        guard simd_length(from) > 1e-5, simd_length(to) > 1e-5 else { return start }
+        let turn = simd_quatf(from: simd_normalize(from), to: simd_normalize(to))
+        return joint.limits.clamp(angles(from: turn * rotation(start, for: joint), for: joint))
     }
 
     struct JointFrame {

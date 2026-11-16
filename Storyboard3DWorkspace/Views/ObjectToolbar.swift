@@ -9,6 +9,7 @@ import SwiftUI
 /// back to the panel: duplicate, recolor, delete, and deselect.
 struct ObjectToolbar: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(\.openWindow) private var openWindow
     @State private var isShowingColors = false
 
     var body: some View {
@@ -30,6 +31,12 @@ struct ObjectToolbar: View {
                             withAnimation(.snappy) { appModel.setCharacterEditMode(isPosing ? .move : .pose) }
                         }
                         .help(isPosing ? "Back to moving the whole character" : "Pose this character's body")
+                        if isPosing && !appModel.isPoseStudioOpen {
+                            Button("Pose Studio", systemImage: "rectangle.3.group.bubble") {
+                                openWindow(id: PoseStudioView.windowID)
+                            }
+                            .help("Pose this character at a large size in its own window")
+                        }
                         if isPosing, let joint = appModel.selectedJoint {
                             Text(joint.displayName)
                                 .font(.caption.weight(.medium))

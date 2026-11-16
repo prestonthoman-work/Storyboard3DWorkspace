@@ -722,29 +722,78 @@ class AppModel {
         solveReach(limb, target: LimbIK.effector(of: limb, in: pose, layout: layout), bendDirection: degrees, grounded: true)
     }
 
-    @ObservationIgnored private var isDraggingReach = false
+    /// True while a body part or reach target is being dragged. The body doesn't re-settle
+    /// onto its feet until the drag ends, so it doesn't shift under the hand.
+    private(set) var isPoseDragging = false
+    /// The dragged joint's angles when the drag began, for turns relative to the start.
+    @ObservationIgnored private var dragStartRotation: (joint: Joint, rotation: JointRotation)?
 
-    /// The reach target was dragged to `point` (world space): the limb bends to follow.
-    func dragReachTarget(to point: SIMD3<Float>) {
-        guard let joint = selectedJoint, let limb = Limb(end: joint), let object = selectedCharacterEntity else { return }
-        if !isDraggingReach {
-            isDraggingReach = true
-            beginPoseChange()
-        }
-        workspace.moveReachTarget(to: point, isDragging: true)
-        guard let target = workspace.limbSpacePoint(point, for: limb, of: object) else { return }
-        // The body doesn't re-settle onto its feet mid-drag, so it doesn't shift under the hand.
-        solveReach(limb, target: target, bendDirection: bendDirection(of: limb) ?? 0, grounded: false)
+    private func beginPoseDragIfNeeded() {
+        guard !isPoseDragging else { return }
+        isPoseDragging = true
+        beginPoseChange()
     }
 
-    func endReachDrag() {
-        guard isDraggingReach else { return }
-        isDraggingReach = false
+    /// Finishes any drag: the body settles back onto its feet and the edit is saved.
+    func endPoseDrag() {
+        guard isPoseDragging else { return }
+        isPoseDragging = false
+        dragStartRotation = nil
         workspace.moveReachTarget(to: .zero, isDragging: false)
+        poseStudio.moveReachTarget(to: .zero, isDragging: false)
         if let object = selectedCharacterEntity, let pose = workspace.characterPose(of: object) {
             setPose(pose, on: object)
         }
         endPoseChange()
+    }
+
+    /// The reach target in the scene was dragged to `point` (world space): the limb bends to follow.
+    func dragReachTarget(to point: SIMD3<Float>) {
+        guard let joint = selectedJoint, let limb = Limb(end: joint), let object = selectedCharacterEntity,
+              let target = workspace.limbSpacePoint(point, for: limb, of: object) else { return }
+        beginPoseDragIfNeeded()
+        workspace.moveReachTarget(to: point, isDragging: true)
+        solveReach(limb, target: target, bendDirection: bendDirection(of: limb) ?? 0, grounded: false)
+    }
+
+    func endReachDrag() {
+        endPoseDrag()
+    }
+
+    /// Drags a hand or foot to `target` (relative to its shoulder or hip, at human scale),
+    /// as from the Pose Studio. End with `endPoseDrag()`.
+    func dragReach(_ limb: Limb, to target: SIMD3<Float>) {
+        beginPoseDragIfNeeded()
+        solveReach(limb, target: target, bendDirection: bendDirection(of: limb) ?? 0, grounded: false)
+    }
+
+    /// Swings a joint to follow a drag, as from the Pose Studio: `from` and `to` are the drag's
+    /// start and current directions from the joint, in its parent's space. End with `endPoseDrag()`.
+    func swingJoint(_ joint: Joint, from: SIMD3<Float>, to: SIMD3<Float>) {
+        guard let object = selectedCharacterEntity, var pose = workspace.characterPose(of: object) else { return }
+        beginPoseDragIfNeeded()
+        if dragStartRotation?.joint != joint {
+            dragStartRotation = (joint, pose[joint])
+            selectJoint(joint)
+        }
+        guard let start = dragStartRotation?.rotation else { return }
+        pose[joint] = CharacterKinematics.swing(joint, startingAt: start, from: from, to: to)
+        setPose(pose, on: object, grounded: false)
+    }
+
+    // Pose Studio
+
+    /// The large copy of the selected character shown in the Pose Studio window.
+    let poseStudio = PoseStudioScene()
+    var isPoseStudioOpen = false
+
+    /// Keeps the studio's figure matching the selected character.
+    func updatePoseStudio() {
+        let recipe = isSelectedObjectCharacter ? selectedObject?.recipe : nil
+        let joint = characterEditMode == .pose ? selectedJoint : nil
+        poseStudio.show(recipe: recipe, pose: selectedCharacterPose, grounded: !isPoseDragging,
+                        selectedJoint: joint,
+                        showsReach: poseTool == .reach && joint.flatMap(Limb.init(end:)) != nil)
     }
 
     private func solveReach(_ limb: Limb, target: SIMD3<Float>, bendDirection: Float, grounded: Bool) {
@@ -915,6 +964,8 @@ class AppModel {
         if id != selectedObjectID { endPosing() }
         selectedObjectID = id
         workspace.showSelection(on: id.flatMap { workspace.object(withID: $0) })
+        // With the Pose Studio open, a newly selected character is ready to pose there.
+        if isPoseStudioOpen && isSelectedObjectCharacter { setCharacterEditMode(.pose) }
     }
 
     func selectObject(containing entity: Entity) {
