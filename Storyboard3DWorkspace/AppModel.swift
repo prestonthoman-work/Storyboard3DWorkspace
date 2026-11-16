@@ -534,12 +534,20 @@ class AppModel {
     }
 
     /// Sets one joint angle on the selected character, live (wrap in begin/endPoseChange).
+    /// The part stops where it would sink into the body.
     func setJointAngle(_ value: Float, axis: JointAxis, of joint: Joint) {
-        guard let object = selectedCharacterEntity, var pose = workspace.characterPose(of: object) else { return }
+        guard let object = selectedCharacterEntity, let current = workspace.characterPose(of: object) else { return }
+        var pose = current
         var rotation = pose[joint]
         rotation[axis] = value
         pose[joint] = rotation
-        setPose(pose, on: object)
+        setPose(avoidingContact(pose, from: current, on: object), on: object)
+    }
+
+    /// As much of `candidate` as the body allows without parts passing through each other.
+    private func avoidingContact(_ candidate: CharacterPose, from current: CharacterPose, on object: Entity) -> CharacterPose {
+        guard let layout = workspace.rigLayout(of: object) else { return candidate }
+        return BodyCollision.resolve(from: current, toward: candidate, layout: layout)
     }
 
     /// Steps one joint angle by a fixed amount, as its own undo step.
@@ -685,19 +693,57 @@ class AppModel {
         case hand(Limb, SIMD3<Float>)
     }
     @ObservationIgnored private var dragStart: DragStart?
+    /// The drag point, eased toward the hand's actual position to take out jitter.
+    @ObservationIgnored private var smoothedDragPoint: SIMD3<Float>?
+
+    /// Eases a drag point: follows the hand closely, without its tremor.
+    private func smoothed(_ point: SIMD3<Float>) -> SIMD3<Float> {
+        let eased = smoothedDragPoint.map { $0 + (point - $0) * 0.55 } ?? point
+        smoothedDragPoint = eased
+        return eased
+    }
 
     /// Swings a joint to follow a drag: `from` and `to` are the drag's start and current
-    /// directions from the joint, in its parent's space. End with `endPoseDrag()`.
+    /// directions from the joint, in its parent's space. The part stops at the body's
+    /// surface instead of passing into it. End with `endPoseDrag()`.
     func swingJoint(_ joint: Joint, from: SIMD3<Float>, to: SIMD3<Float>) {
-        guard let object = selectedCharacterEntity, var pose = workspace.characterPose(of: object) else { return }
+        guard let object = selectedCharacterEntity, let current = workspace.characterPose(of: object),
+              let layout = workspace.rigLayout(of: object) else { return }
         if case .swing(let started, _) = dragStart, started == joint {} else {
             beginPoseDrag()
-            dragStart = .swing(joint, pose[joint])
+            dragStart = .swing(joint, current[joint])
+            smoothedDragPoint = nil
             selectJoint(joint)
         }
         guard case .swing(_, let start) = dragStart else { return }
+        var from = from, to = smoothed(to)
+        // A grab right at the joint (on its ball) would make tiny hand movements spin the part.
+        // Measure from along the part instead, so it turns as if pulled by its far end.
+        let lever = CharacterKinematics.rotation(start, for: joint).act(Self.lever(of: joint, layout: layout))
+        if simd_length(from) < simd_length(lever) * 0.6 {
+            from += lever
+            to += lever
+        }
+        var pose = current
         pose[joint] = CharacterKinematics.swing(joint, startingAt: start, from: from, to: to)
-        setPose(pose, on: object, grounded: false)
+        setPose(avoidingContact(pose, from: current, on: object), on: object, grounded: false)
+    }
+
+    /// A body part's length and direction from its joint, at rest: what it's pulled by.
+    private static func lever(of joint: Joint, layout: RigLayout) -> SIMD3<Float> {
+        switch joint {
+        case .pelvis: [0, 0.3, 0]
+        case .spine: [0, 0.2, 0]
+        case .chest: [0, 0.25, 0]
+        case .neck: [0, 0.12, 0]
+        case .head: [0, 0.2 * layout.proportions.head, 0]
+        case .leftShoulder, .rightShoulder: layout.offset(of: .leftElbow)
+        case .leftElbow, .rightElbow: layout.offset(of: .leftWrist)
+        case .leftWrist, .rightWrist: [0, -0.16, 0]
+        case .leftHip, .rightHip: layout.offset(of: .leftKnee)
+        case .leftKnee, .rightKnee: layout.offset(of: .leftAnkle)
+        case .leftAnkle, .rightAnkle: [0, -0.04, 0.18]
+        }
     }
 
     /// Moves a hand or foot with a drag, bending the arm or leg to follow: `from` and `to`
@@ -709,11 +755,12 @@ class AppModel {
         if case .hand(let started, _) = dragStart, started == limb {} else {
             beginPoseDrag()
             dragStart = .hand(limb, LimbIK.effector(of: limb, in: pose, layout: layout))
+            smoothedDragPoint = nil
             selectJoint(limb.end)
         }
         guard case .hand(_, let start) = dragStart else { return }
         let bend = LimbIK.bendDirection(of: limb, in: pose, layout: layout)
-        solveReach(limb, target: start + (to - from), bendDirection: bend, grounded: false)
+        solveReach(limb, target: start + (smoothed(to) - from), bendDirection: bend, grounded: false)
     }
 
     private func beginPoseDrag() {
@@ -728,6 +775,7 @@ class AppModel {
         guard isPoseDragging else { return }
         isPoseDragging = false
         dragStart = nil
+        smoothedDragPoint = nil
         if let object = selectedCharacterEntity, let pose = workspace.characterPose(of: object) {
             setPose(pose, on: object)
         }
@@ -738,7 +786,7 @@ class AppModel {
         guard let object = selectedCharacterEntity, let pose = workspace.characterPose(of: object),
               let layout = workspace.rigLayout(of: object) else { return }
         let solved = LimbIK.solve(limb, reaching: target, bendDirection: bendDirection, pose: pose, layout: layout)
-        setPose(solved, on: object, grounded: grounded)
+        setPose(avoidingContact(solved, from: pose, on: object), on: object, grounded: grounded)
     }
 
     private func setPose(_ pose: CharacterPose, on object: Entity, grounded: Bool = true) {

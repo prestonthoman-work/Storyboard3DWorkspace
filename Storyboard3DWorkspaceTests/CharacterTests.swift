@@ -98,6 +98,64 @@ struct CharacterRigTests {
         #expect(abs(a.interpolated(to: b, 0.5)[.rightShoulder].bend - 60) < 0.01)
     }
 
+    // MARK: Body parts don't pass through each other
+
+    @Test(arguments: CharacterKind.allCases)
+    func standingStraightIsAClean(kind: CharacterKind) {
+        for proportions in [kind.proportions,
+                            CharacterProportions(height: 1, build: CharacterProportions.buildRange.lowerBound, head: 1.35, legs: 0.8),
+                            CharacterProportions(height: 1, build: CharacterProportions.buildRange.upperBound, head: 0.8, legs: 1.2)] {
+            let layout = RigLayout(proportions: proportions)
+            #expect(BodyCollision.penetration(of: .neutral, layout: layout) == 0,
+                    "\(kind) \(proportions): \(BodyCollision.contacts(in: .neutral, layout: layout))")
+        }
+    }
+
+    @Test func anArmStopsAtTheBodyInsteadOfSinkingIn() {
+        var inward = CharacterPose()
+        inward[.leftShoulder] = JointRotation(side: -20)           // swings the hanging arm into the hips
+        #expect(BodyCollision.penetration(of: inward, layout: layout) > 0)
+
+        let resolved = BodyCollision.resolve(from: .neutral, toward: inward, layout: layout)
+        #expect(BodyCollision.penetration(of: resolved, layout: layout) == 0)
+        #expect(resolved[.leftShoulder].side > -20 && resolved[.leftShoulder].side <= 0)
+    }
+
+    @Test func legsDontPassThroughEachOther() {
+        var crossed = CharacterPose()
+        crossed[.leftHip] = JointRotation(side: -15)
+        #expect(BodyCollision.penetration(of: crossed, layout: layout) > 0)
+        let resolved = BodyCollision.resolve(from: .neutral, toward: crossed, layout: layout)
+        #expect(BodyCollision.penetration(of: resolved, layout: layout) == 0)
+        #expect(resolved[.leftHip].side > -15)
+    }
+
+    @Test func blockedPartsSlideRatherThanStick() {
+        // Raise the arm forward while also pushing it inward: the free forward turn still happens.
+        var candidate = CharacterPose()
+        candidate[.leftShoulder] = JointRotation(bend: 40, side: -20)
+        let resolved = BodyCollision.resolve(from: .neutral, toward: candidate, layout: layout)
+        #expect(abs(resolved[.leftShoulder].bend - 40) < 0.5)
+        #expect(BodyCollision.penetration(of: resolved, layout: layout) == 0)
+    }
+
+    @Test func freeMovesAreNeverHeldBack() {
+        var candidate = CharacterPose()
+        candidate[.leftElbow] = JointRotation(bend: 120)
+        candidate[.head] = JointRotation(twist: 40)
+        #expect(BodyCollision.resolve(from: .neutral, toward: candidate, layout: layout) == candidate)
+    }
+
+    @Test func posesThatAlreadyOverlapNeverLockUp() {
+        let crouch = PosePreset.crouching.pose
+        let before = BodyCollision.penetration(of: crouch, layout: layout)
+        var candidate = crouch
+        candidate[.head] = JointRotation(bend: -20, twist: 30)
+        let resolved = BodyCollision.resolve(from: crouch, toward: candidate, layout: layout)
+        #expect(resolved[.head] == candidate[.head])
+        #expect(BodyCollision.penetration(of: resolved, layout: layout) <= before + 1e-4)
+    }
+
     @Test func mirroringSwapsLeftAndRight() {
         let pointing = PosePreset.pointing.pose
         let mirrored = pointing.mirrored
@@ -296,6 +354,41 @@ extension SharedStateTests {
 
             app.resetJoint(.leftElbow)
             #expect(app.workspace.characterPose(of: object)?.isNeutral == true)
+        }
+
+        @Test func slidersAndDragsStopAtTheBody() async throws {
+            let app = try await makeApp()
+            let (_, object) = try addCharacter(.mannequin, to: app)
+            let layout = try #require(app.workspace.rigLayout(of: object))
+            func pose() -> CharacterPose { app.workspace.characterPose(of: object) ?? .neutral }
+
+            // A slider pushed all the way stops where the arm meets the body.
+            app.beginPoseChange()
+            app.setJointAngle(-20, axis: .side, of: .leftShoulder)
+            app.endPoseChange()
+            #expect(pose()[.leftShoulder].side > -20)
+            #expect(BodyCollision.penetration(of: pose(), layout: layout) == 0)
+
+            // Free sliders go exactly where they're set.
+            app.beginPoseChange()
+            app.setJointAngle(90, axis: .bend, of: .rightElbow)
+            app.endPoseChange()
+            #expect(pose()[.rightElbow].bend == 90)
+
+            // Dragging the right arm across into the hips (toward +x, the body's middle): it
+            // swings in until it meets the body, then stops at the surface.
+            for step in 1...8 {
+                app.swingJoint(.rightShoulder, from: [0, -0.4, 0], to: [Float(step) * 0.05, -0.4, 0])
+            }
+            app.endPoseDrag()
+            #expect(pose()[.rightShoulder].side < -1)                                   // it did move in
+            #expect(pose()[.rightShoulder].side > Joint.rightShoulder.limits.side.lowerBound) // but stopped short
+            #expect(BodyCollision.penetration(of: pose(), layout: layout) == 0)
+
+            // Pulling a hand into the chest: it stays outside.
+            app.dragHand(.leftArm, from: [0, -0.55, 0], to: [-0.25, 0.05, 0])
+            app.endPoseDrag()
+            #expect(BodyCollision.penetration(of: pose(), layout: layout) == 0)
         }
 
         @Test func inTheSceneACharacterIsAlwaysOneMovablePiece() async throws {
