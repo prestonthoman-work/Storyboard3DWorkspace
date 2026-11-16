@@ -51,79 +51,81 @@ struct SlideCaptionTests {
     }
 }
 
-/// Serialized: these share the projects storage override.
-@MainActor
-@Suite(.serialized)
-struct EnhancementAppTests {
-    init() throws {
-        let storage = FileManager.default.temporaryDirectory.appending(path: "EnhancementTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
-        ProjectStore.storageOverride = storage
-    }
-
-    private func solidImage() -> CGImage {
-        let context = CGContext(data: nil, width: 64, height: 36, bitsPerComponent: 8, bytesPerRow: 0,
-                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: 64, height: 36))
-        return context.makeImage()!
-    }
-
-    @Test func onionSkinGhostsWhatMovedAndStaysOutOfPhotos() async throws {
-        let app = AppModel()
-        await app.createProject(from: .streetCorner)
-        app.immersiveSpaceState = .open
-        defer { app.immersiveSpaceState = .closed }
-        let preference = app.showsOnionSkin
-        app.showsOnionSkin = true
-        defer { app.showsOnionSkin = preference }
-
-        // Keyframe 2 is selected; only the car moved since keyframe 1.
-        let car = try #require(app.objects.first { $0.name == "Hero Car" }?.id)
-        let ghosts = try #require(app.onionSkinPoses)
-        #expect(Set(ghosts.keys) == [car])
-
-        app.workspace.setOnionSkin(ghosts)
-        #expect(app.workspace.onionRoot.children.count == 1)
-        let snapshot = CompositionRenderer.snapshot(of: app.workspace.baseAnchor)
-        #expect(snapshot.findEntity(named: WorkspaceScene.onionSkinName) == nil)
-
-        app.selectKeyframe(app.animator.timeline.keyframes[0])
-        #expect(app.onionSkinPoses == nil)              // nothing before the first keyframe
-        app.workspace.setOnionSkin(nil)
-        #expect(app.workspace.onionRoot.children.isEmpty)
-    }
-
-    @Test func animaticNeedsAPhotographedKeyframe() async throws {
-        let app = AppModel()
-        await app.createProject(from: .streetCorner)
-        await app.useBuiltInSky()
-        #expect(!app.canExportAnimatic)
-        let camera = CaptureCamera.looking(from: [0, 1.3, 0.6], at: app.workspace.baseAnchor.position(relativeTo: nil),
-                                           lens: .standard)
-        app.photos.add(solidImage(), lens: .standard, keyframe: app.animator.timeline.keyframes[0].id, camera: camera)
-        #expect(app.canExportAnimatic)
-    }
-
-    @Test func animaticRendersAVideoOfTheMove() async throws {
-        let app = AppModel()
-        await app.createProject(from: .streetCorner)
-        await app.useBuiltInSky()
-        let target = app.workspace.baseAnchor.position(relativeTo: nil)
-        let keyframes = app.animator.timeline.keyframes
-        app.photos.add(solidImage(), lens: .wide, keyframe: keyframes[0].id,
-                       camera: .looking(from: target + [-0.4, 0.3, 0.5], at: target, lens: .wide))
-        app.photos.add(solidImage(), lens: .normal, keyframe: keyframes[1].id,
-                       camera: .looking(from: target + [0.4, 0.2, 0.4], at: target, lens: .normal))
-
-        app.exportAnimatic()
-        for _ in 0..<600 where app.exports.isExporting || app.exports.exportedFile == nil && app.exports.exportError == nil {
-            try await Task.sleep(for: .milliseconds(100))
+extension SharedStateTests {
+    /// Serialized: these share the projects storage override.
+    @MainActor
+    @Suite(.serialized)
+    struct EnhancementAppTests {
+        init() throws {
+            let storage = FileManager.default.temporaryDirectory.appending(path: "EnhancementTests-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+            ProjectStore.storageOverride = storage
         }
-        #expect(app.exports.exportError == nil)
-        let file = try #require(app.exports.exportedFile)
-        let duration = try await AVURLAsset(url: file.url).load(.duration).seconds
-        // One second of motion plus the half-second hold on the last shot.
-        #expect(abs(duration - 1.5) < 0.15)
+
+        private func solidImage() -> CGImage {
+            let context = CGContext(data: nil, width: 64, height: 36, bitsPerComponent: 8, bytesPerRow: 0,
+                                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+            context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: 64, height: 36))
+            return context.makeImage()!
+        }
+
+        @Test func onionSkinGhostsWhatMovedAndStaysOutOfPhotos() async throws {
+            let app = AppModel()
+            await app.createProject(from: .streetCorner)
+            app.immersiveSpaceState = .open
+            defer { app.immersiveSpaceState = .closed }
+            let preference = app.showsOnionSkin
+            app.showsOnionSkin = true
+            defer { app.showsOnionSkin = preference }
+
+            // Keyframe 2 is selected; only the car moved since keyframe 1.
+            let car = try #require(app.objects.first { $0.name == "Hero Car" }?.id)
+            let ghosts = try #require(app.onionSkinPoses)
+            #expect(Set(ghosts.keys) == [car])
+
+            app.workspace.setOnionSkin(ghosts)
+            #expect(app.workspace.onionRoot.children.count == 1)
+            let snapshot = CompositionRenderer.snapshot(of: app.workspace.baseAnchor)
+            #expect(snapshot.findEntity(named: WorkspaceScene.onionSkinName) == nil)
+
+            app.selectKeyframe(app.animator.timeline.keyframes[0])
+            #expect(app.onionSkinPoses == nil)              // nothing before the first keyframe
+            app.workspace.setOnionSkin(nil)
+            #expect(app.workspace.onionRoot.children.isEmpty)
+        }
+
+        @Test func animaticNeedsAPhotographedKeyframe() async throws {
+            let app = AppModel()
+            await app.createProject(from: .streetCorner)
+            await app.useBuiltInSky()
+            #expect(!app.canExportAnimatic)
+            let camera = CaptureCamera.looking(from: [0, 1.3, 0.6], at: app.workspace.baseAnchor.position(relativeTo: nil),
+                                               lens: .standard)
+            app.photos.add(solidImage(), lens: .standard, keyframe: app.animator.timeline.keyframes[0].id, camera: camera)
+            #expect(app.canExportAnimatic)
+        }
+
+        @Test func animaticRendersAVideoOfTheMove() async throws {
+            let app = AppModel()
+            await app.createProject(from: .streetCorner)
+            await app.useBuiltInSky()
+            let target = app.workspace.baseAnchor.position(relativeTo: nil)
+            let keyframes = app.animator.timeline.keyframes
+            app.photos.add(solidImage(), lens: .wide, keyframe: keyframes[0].id,
+                           camera: .looking(from: target + [-0.4, 0.3, 0.5], at: target, lens: .wide))
+            app.photos.add(solidImage(), lens: .normal, keyframe: keyframes[1].id,
+                           camera: .looking(from: target + [0.4, 0.2, 0.4], at: target, lens: .normal))
+
+            app.exportAnimatic()
+            for _ in 0..<600 where app.exports.isExporting || app.exports.exportedFile == nil && app.exports.exportError == nil {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            #expect(app.exports.exportError == nil)
+            let file = try #require(app.exports.exportedFile)
+            let duration = try await AVURLAsset(url: file.url).load(.duration).seconds
+            // One second of motion plus the half-second hold on the last shot.
+            #expect(abs(duration - 1.5) < 0.15)
+        }
     }
 }

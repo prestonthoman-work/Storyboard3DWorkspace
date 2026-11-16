@@ -95,6 +95,14 @@ enum Joint: String, CaseIterable, Codable, CodingKeyRepresentable, Identifiable 
         [.leftShoulder, .leftElbow, .leftWrist, .leftHip, .leftKnee, .leftAnkle].contains(self)
     }
 
+    /// The same joint on the other side of the body (itself, on the center line).
+    var mirror: Joint {
+        let raw = rawValue
+        if raw.hasPrefix("left") { return Joint(rawValue: "right" + raw.dropFirst(4)) ?? self }
+        if raw.hasPrefix("right") { return Joint(rawValue: "left" + raw.dropFirst(5)) ?? self }
+        return self
+    }
+
     /// Which way a positive angle turns, about the joint's X (bend), Y (twist), and Z (side)
     /// axes. Chosen so the same number means the same thing on both sides of the body: a
     /// positive shoulder bend raises either arm forward, a positive side raise lifts either
@@ -250,6 +258,25 @@ struct CharacterPose: Codable, Equatable {
     }
 
     var isNeutral: Bool { rotations.isEmpty }
+
+    /// The same pose with left and right swapped, as if seen in a mirror: a right-hand wave
+    /// becomes a left-hand wave, and turning left becomes turning right.
+    var mirrored: CharacterPose {
+        var result = CharacterPose()
+        for joint in Joint.allCases {
+            var rotation = self[joint]
+            if joint.mirror == joint {
+                // Joints on the center line: lean stays, turn and tilt swap direction.
+                rotation.twist = -rotation.twist
+                rotation.side = -rotation.side
+                result[joint] = rotation
+            } else {
+                // Limb angles mean the same thing on either side, so they move across as is.
+                result[joint.mirror] = rotation
+            }
+        }
+        return result
+    }
 
     /// Partway from this pose to `other`: 0 is this pose, 1 is `other`.
     func interpolated(to other: CharacterPose, _ t: Float) -> CharacterPose {

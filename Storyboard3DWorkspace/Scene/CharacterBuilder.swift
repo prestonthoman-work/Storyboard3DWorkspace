@@ -30,9 +30,6 @@ struct BodyPartComponent: Component {
     var joint: Joint
 }
 
-/// Editing aids (joint markers) that must never appear in photos, exports, or ghosts.
-struct EditorOnlyComponent: Component {}
-
 // MARK: Building
 
 /// Builds the poseable characters: a mannequin of rounded segments and ball joints, laid out
@@ -43,7 +40,6 @@ struct EditorOnlyComponent: Component {}
 /// carries the arm and hand.
 enum CharacterBuilder {
     static let scalerName = "CharacterScale"
-    static let markerName = "JointMarker"
 
     static func defaultColor(for kind: CharacterKind) -> UIColor {
         switch kind {
@@ -85,7 +81,6 @@ enum CharacterBuilder {
                 part.components.set(GroundingShadowComponent(castsShadow: true))
                 entity.addChild(part)
             }
-            entity.addChild(makeMarker())
         }
         apply(.neutral, to: content)
         return content
@@ -125,7 +120,7 @@ enum CharacterBuilder {
             let length = layout.forearm
             return [ball(0.046 * build), segment([0.072 * build, length - 0.04, 0.072 * build], at: [0, -length / 2, 0], radius: 0.03)]
         case .leftWrist, .rightWrist:
-            return [segment([0.04, 0.17, 0.09], at: [0, -0.09, 0.005], radius: 0.018)]
+            return [ball(0.036 * build), segment([0.04, 0.16, 0.09], at: [0, -0.1, 0.005], radius: 0.018)]
         case .leftHip, .rightHip:
             let length = layout.thigh
             return [ball(0.068 * build), segment([0.13 * build, length - 0.06, 0.13 * build], at: [0, -length / 2, 0], radius: 0.05)]
@@ -134,18 +129,8 @@ enum CharacterBuilder {
             return [ball(0.055 * build), segment([0.10 * build, length - 0.05, 0.10 * build], at: [0, -length / 2, 0], radius: 0.04)]
         case .leftAnkle, .rightAnkle:
             let height = layout.ankleHeight
-            return [segment([0.10 * build, height, 0.25], at: [0, -height / 2, 0.06], radius: 0.03)]
+            return [ball(0.045 * build), segment([0.10 * build, height, 0.25], at: [0, -height / 2, 0.06], radius: 0.03)]
         }
-    }
-
-    private static func makeMarker() -> ModelEntity {
-        var material = UnlitMaterial(color: .white)
-        material.blending = .transparent(opacity: 0.85)
-        let marker = ModelEntity(mesh: .generateSphere(radius: 0.065), materials: [material])
-        marker.name = markerName
-        marker.components.set(EditorOnlyComponent())
-        marker.isEnabled = false
-        return marker
     }
 
     private static func shade(_ color: UIColor, _ amount: CGFloat) -> UIColor {
@@ -190,7 +175,7 @@ enum CharacterBuilder {
         }
     }
 
-    /// The lowest point of the body's geometry in `space`, ignoring editing aids.
+    /// The lowest point of the body's geometry in `space`.
     private static func lowestPoint(of content: Entity, in space: Entity) -> Float? {
         var lowest: Float?
         func visit(_ entity: Entity) {
@@ -204,22 +189,8 @@ enum CharacterBuilder {
         return lowest
     }
 
-    /// Shows or hides the joint markers, highlighting the selected joint.
-    /// - Parameter size: Marker size relative to the miniature's. Smaller on the large studio figure.
-    static func showMarkers(_ isVisible: Bool, selected: Joint?, in content: Entity, size: Float = 1) {
-        for (joint, entity) in joints(in: content) {
-            guard let marker = entity.children.first(where: { $0.name == markerName }) as? ModelEntity else { continue }
-            marker.isEnabled = isVisible
-            let isSelected = joint == selected
-            var material = UnlitMaterial(color: isSelected ? UIColor(red: 0.35, green: 0.85, blue: 1, alpha: 1) : .white)
-            material.blending = .transparent(opacity: .init(floatLiteral: isSelected ? 1 : 0.7))
-            marker.model?.materials = [material]
-            marker.scale = SIMD3(repeating: (isSelected ? 1.45 : 1) * size)
-        }
-    }
-
-    /// Body parts become tappable while posing, each with a target a little larger than the
-    /// part so small limbs are easier to pick.
+    /// Body parts become grabbable in the Pose Studio, each with a target a little larger than
+    /// the part so small limbs are easy to pick.
     static func setPartsTappable(_ isTappable: Bool, in content: Entity) {
         func visit(_ entity: Entity) {
             if entity.components.has(BodyPartComponent.self) {
@@ -238,16 +209,5 @@ enum CharacterBuilder {
             entity.children.forEach(visit)
         }
         visit(content)
-    }
-
-    /// Removes every editing aid from a copy of the scene (photos, exports, onion skin ghosts).
-    static func stripEditorOnly(from entity: Entity) {
-        for child in Array(entity.children) {
-            if child.components.has(EditorOnlyComponent.self) {
-                child.removeFromParent()
-            } else {
-                stripEditorOnly(from: child)
-            }
-        }
     }
 }

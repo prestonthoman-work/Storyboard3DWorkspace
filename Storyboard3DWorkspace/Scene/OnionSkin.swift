@@ -41,7 +41,6 @@ extension WorkspaceScene {
             for child in object.children where child.name != Self.selectionIndicatorName {
                 let copy = child.clone(recursive: true)
                 Self.stripForGhost(copy)
-                CharacterBuilder.stripEditorOnly(from: copy)
                 // A character's ghost shows its body pose from that keyframe too.
                 if let characterPose = characterPoses[id] { CharacterBuilder.apply(characterPose, to: copy) }
                 ghost.addChild(copy)

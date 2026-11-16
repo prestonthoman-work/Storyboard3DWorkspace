@@ -24,10 +24,13 @@ final class PoseStudioScene {
     /// its orientation in the scene.
     let stage = Entity()
     private let holder = Entity()
-    let ikHandle = ModelEntity()
     private(set) var character: Entity?
     private var shownRecipe: ModelRecipe?
-    private var shownOverlay: (joint: Joint?, showsReach: Bool)?
+    private var shownJoint: Joint??
+    /// Each body part's own materials, so a highlight can be taken off again.
+    private var originalMaterials: [ObjectIdentifier: [any RealityKit.Material]] = [:]
+
+    static let highlightColor = UIColor(red: 0.42, green: 0.80, blue: 1, alpha: 1)
 
     init() {
         root.name = "PoseStudio"
@@ -51,29 +54,16 @@ final class PoseStudioScene {
                                 materials: [UnlitMaterial(color: UIColor(red: 0.35, green: 0.85, blue: 1, alpha: 1))])
         notch.position = [0, 0.001, 0.285]
         stage.addChild(notch)
-
-        var material = UnlitMaterial(color: UIColor(red: 0.35, green: 0.85, blue: 1, alpha: 1))
-        material.blending = .transparent(opacity: 0.9)
-        ikHandle.name = WorkspaceScene.ikHandleName
-        ikHandle.model = ModelComponent(mesh: .generateSphere(radius: 0.014), materials: [material])
-        ikHandle.components.set(IKHandleComponent())
-        ikHandle.components.set(IKHandleFollowComponent())
-        ikHandle.components.set(InputTargetComponent())
-        ikHandle.components.set(CollisionComponent(shapes: [.generateSphere(radius: 0.035)]))
-        ikHandle.components.set(HoverEffectComponent())
-        ikHandle.isEnabled = false
-        root.addChild(ikHandle)
     }
 
     /// Shows `recipe` in `pose`, rebuilding the figure only when the character itself
     /// changed (a new character, color, or proportions). Nil clears the stage.
-    func show(recipe: ModelRecipe?, pose: CharacterPose?, grounded: Bool, selectedJoint: Joint?, showsReach: Bool) {
+    func show(recipe: ModelRecipe?, pose: CharacterPose?, grounded: Bool, selectedJoint: Joint?) {
         guard let recipe, recipe.characterKind != nil, let pose else {
             character?.removeFromParent()
             character = nil
             shownRecipe = nil
-            shownOverlay = nil
-            ikHandle.isEnabled = false
+            shownJoint = nil
             return
         }
         if recipe != shownRecipe || character == nil, let content = recipe.makeEntity() {
@@ -82,22 +72,29 @@ final class PoseStudioScene {
             holder.addChild(content)
             character = content
             shownRecipe = recipe
-            shownOverlay = nil
+            shownJoint = nil
+            originalMaterials = [:]
         }
         guard let character else { return }
         CharacterBuilder.apply(pose, to: character, grounded: grounded)
-
-        if shownOverlay.map({ $0.joint != selectedJoint || $0.showsReach != showsReach }) ?? true {
-            shownOverlay = (selectedJoint, showsReach)
-            CharacterBuilder.showMarkers(true, selected: selectedJoint, in: character, size: 0.55)
-            if showsReach, let joint = selectedJoint, let target = jointEntity(joint) {
-                ikHandle.components.set(IKHandleFollowComponent(target: target, isDragging: false))
-                ikHandle.position = target.position(relativeTo: root)
-                ikHandle.isEnabled = true
-            } else {
-                ikHandle.isEnabled = false
-            }
+        if shownJoint != .some(selectedJoint) {
+            shownJoint = .some(selectedJoint)
+            highlight(selectedJoint, in: character)
         }
+    }
+
+    /// Tints the selected body part, including the ball joint it turns around.
+    private func highlight(_ joint: Joint?, in character: Entity) {
+        let tint = LowPoly.material(Self.highlightColor, .satin)
+        func visit(_ entity: Entity) {
+            if let part = entity.components[BodyPartComponent.self], let model = entity as? ModelEntity {
+                let key = ObjectIdentifier(model)
+                if originalMaterials[key] == nil { originalMaterials[key] = model.model?.materials ?? [] }
+                model.model?.materials = part.joint == joint ? [tint] : originalMaterials[key] ?? []
+            }
+            entity.children.forEach(visit)
+        }
+        visit(character)
     }
 
     func jointEntity(_ joint: Joint) -> Entity? {
@@ -117,13 +114,6 @@ final class PoseStudioScene {
         guard let parentJoint = limb.root.parent, let parent = jointEntity(parentJoint),
               let root = jointEntity(limb.root) else { return nil }
         return parent.convert(position: point, from: nil) - root.position
-    }
-
-    func moveReachTarget(to point: SIMD3<Float>, isDragging: Bool) {
-        var follow = ikHandle.components[IKHandleFollowComponent.self] ?? IKHandleFollowComponent()
-        follow.isDragging = isDragging
-        ikHandle.components.set(follow)
-        if isDragging { ikHandle.position = root.convert(position: point, from: nil) }
     }
 
     // MARK: Turning the view

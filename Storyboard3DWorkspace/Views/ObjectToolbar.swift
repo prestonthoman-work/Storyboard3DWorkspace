@@ -25,30 +25,16 @@ struct ObjectToolbar: View {
                         .lineLimit(1)
                         .padding(.horizontal, 10)
 
-                    if appModel.isSelectedObjectCharacter {
-                        let isPosing = appModel.characterEditMode == .pose
-                        Button(isPosing ? "Done Posing" : "Pose", systemImage: isPosing ? "checkmark" : "figure.walk.motion") {
-                            withAnimation(.snappy) { appModel.setCharacterEditMode(isPosing ? .move : .pose) }
+                    if appModel.isSelectedObjectCharacter && !appModel.isPoseStudioOpen {
+                        Button("Pose", systemImage: "figure.walk.motion") {
+                            openWindow(id: PoseStudioView.windowID)
                         }
-                        .help(isPosing ? "Back to moving the whole character" : "Pose this character's body")
-                        if isPosing && !appModel.isPoseStudioOpen {
-                            Button("Pose Studio", systemImage: "rectangle.3.group.bubble") {
-                                openWindow(id: PoseStudioView.windowID)
-                            }
-                            .help("Pose this character at a large size in its own window")
-                        }
-                        if isPosing, let joint = appModel.selectedJoint {
-                            Text(joint.displayName)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .padding(.horizontal, 6)
-                        }
+                        .help("Pose this character in the Pose Studio")
                     }
                     Button("Duplicate", systemImage: "plus.square.on.square") {
                         appModel.duplicateSelectedObject()
                     }
-                    if appModel.canRecolorSelectedObject && appModel.characterEditMode == .move {
+                    if appModel.canRecolorSelectedObject {
                         Button("Color", systemImage: "paintpalette") {
                             withAnimation(.snappy) { isShowingColors.toggle() }
                         }

@@ -484,24 +484,11 @@ class AppModel {
                              entity: CharacterBuilder.make(kind, proportions: kind.proportions, tint: nil), note: nil))
     }
 
-    enum CharacterEditMode: Hashable {
-        /// Pinch moves, turns, and resizes the whole character.
-        case move
-        /// Pinch picks body parts; the inspector turns joints.
-        case pose
-    }
+    /// Every character in the scene, for choosing one in the Pose Studio.
+    var characters: [ObjectSummary] { objects.filter { $0.recipe.characterKind != nil } }
 
-    /// How a selected hand or foot is edited.
-    enum PoseTool: Hashable {
-        /// Turn the joint itself.
-        case rotate
-        /// Place the hand or foot, and the arm or leg bends to reach it.
-        case reach
-    }
-
-    private(set) var characterEditMode: CharacterEditMode = .move
+    /// The body part selected in the Pose Studio.
     private(set) var selectedJoint: Joint?
-    var poseTool: PoseTool = .rotate
     /// Poses saved for reuse, shared by every project.
     private(set) var savedPoses: [SavedPose] = PoseLibraryStore.load()
     private(set) var poseLibraryError: String?
@@ -531,50 +518,8 @@ class AppModel {
         return selectedCharacterEntity.flatMap { workspace.characterPose(of: $0) }
     }
 
-    /// What the posing overlay should show right now. Nothing during playback, outside the
-    /// workspace, or when not posing.
-    var poseOverlay: PoseOverlay? {
-        guard characterEditMode == .pose, immersiveSpaceState == .open, !animator.isPlaying,
-              let id = selectedObjectID, isSelectedObjectCharacter else { return nil }
-        let reach = poseTool == .reach && selectedJoint.flatMap(Limb.init(end:)) != nil
-        return PoseOverlay(objectID: id, joint: selectedJoint, showsReachTarget: reach)
-    }
-
-    func setCharacterEditMode(_ mode: CharacterEditMode) {
-        guard mode != characterEditMode else { return }
-        if mode == .pose, let object = selectedCharacterEntity {
-            animator.pause()
-            flushAutoSave()
-            workspace.setPoseEditing(object)
-            characterEditMode = .pose
-            if selectedJoint == nil { selectedJoint = .chest }
-        } else {
-            endPosing()
-        }
-    }
-
-    /// Back to staging the scene: the character moves as a whole again.
-    func endPosing() {
-        guard characterEditMode != .move || workspace.poseEditingTarget != nil else { return }
-        workspace.setPoseEditing(nil)
-        characterEditMode = .move
-        selectedJoint = nil
-        poseTool = .rotate
-    }
-
     func selectJoint(_ joint: Joint?) {
         selectedJoint = joint
-        if joint.flatMap(Limb.init(end:)) == nil { poseTool = .rotate }
-    }
-
-    /// A tap in the scene: picks a body part while posing, otherwise selects an object.
-    func handleTap(on entity: Entity) {
-        if characterEditMode == .pose, let (object, joint) = workspace.joint(containing: entity),
-           workspace.objectID(of: object) == selectedObjectID {
-            selectJoint(joint)
-            return
-        }
-        selectObject(containing: entity)
     }
 
     /// Call when a joint slider is first touched, so one drag is one undo step.
@@ -616,6 +561,12 @@ class AppModel {
     /// Back to standing straight. Where the character stands and its size don't change.
     func resetPose() {
         applyPose(.neutral)
+    }
+
+    /// Swaps left and right, as if seen in a mirror.
+    func mirrorPose() {
+        guard let pose = selectedCharacterPose else { return }
+        applyPose(pose.mirrored)
     }
 
     /// Replaces the selected character's pose, keeping its place in the scene and size.
@@ -688,7 +639,7 @@ class AppModel {
         sceneEdited()
     }
 
-    // Reaching with a hand or foot
+    // Hands and feet
 
     /// The selected limb's hand or foot position relative to its shoulder or hip, at human
     /// scale in meters: x outward from the body, y up, z forward.
@@ -722,78 +673,65 @@ class AppModel {
         solveReach(limb, target: LimbIK.effector(of: limb, in: pose, layout: layout), bendDirection: degrees, grounded: true)
     }
 
-    /// True while a body part or reach target is being dragged. The body doesn't re-settle
-    /// onto its feet until the drag ends, so it doesn't shift under the hand.
+    // Dragging body parts (Pose Studio)
+
+    /// True while a body part is being dragged. The body doesn't re-settle onto its feet
+    /// until the drag ends, so it doesn't shift under the hand.
     private(set) var isPoseDragging = false
-    /// The dragged joint's angles when the drag began, for turns relative to the start.
-    @ObservationIgnored private var dragStartRotation: (joint: Joint, rotation: JointRotation)?
 
-    private func beginPoseDragIfNeeded() {
-        guard !isPoseDragging else { return }
-        isPoseDragging = true
-        beginPoseChange()
+    /// How the dragged part started, so each drag is relative to where it began.
+    private enum DragStart {
+        case swing(Joint, JointRotation)
+        case hand(Limb, SIMD3<Float>)
     }
+    @ObservationIgnored private var dragStart: DragStart?
 
-    /// Finishes any drag: the body settles back onto its feet and the edit is saved.
-    func endPoseDrag() {
-        guard isPoseDragging else { return }
-        isPoseDragging = false
-        dragStartRotation = nil
-        workspace.moveReachTarget(to: .zero, isDragging: false)
-        poseStudio.moveReachTarget(to: .zero, isDragging: false)
-        if let object = selectedCharacterEntity, let pose = workspace.characterPose(of: object) {
-            setPose(pose, on: object)
-        }
-        endPoseChange()
-    }
-
-    /// The reach target in the scene was dragged to `point` (world space): the limb bends to follow.
-    func dragReachTarget(to point: SIMD3<Float>) {
-        guard let joint = selectedJoint, let limb = Limb(end: joint), let object = selectedCharacterEntity,
-              let target = workspace.limbSpacePoint(point, for: limb, of: object) else { return }
-        beginPoseDragIfNeeded()
-        workspace.moveReachTarget(to: point, isDragging: true)
-        solveReach(limb, target: target, bendDirection: bendDirection(of: limb) ?? 0, grounded: false)
-    }
-
-    func endReachDrag() {
-        endPoseDrag()
-    }
-
-    /// Drags a hand or foot to `target` (relative to its shoulder or hip, at human scale),
-    /// as from the Pose Studio. End with `endPoseDrag()`.
-    func dragReach(_ limb: Limb, to target: SIMD3<Float>) {
-        beginPoseDragIfNeeded()
-        solveReach(limb, target: target, bendDirection: bendDirection(of: limb) ?? 0, grounded: false)
-    }
-
-    /// Swings a joint to follow a drag, as from the Pose Studio: `from` and `to` are the drag's
-    /// start and current directions from the joint, in its parent's space. End with `endPoseDrag()`.
+    /// Swings a joint to follow a drag: `from` and `to` are the drag's start and current
+    /// directions from the joint, in its parent's space. End with `endPoseDrag()`.
     func swingJoint(_ joint: Joint, from: SIMD3<Float>, to: SIMD3<Float>) {
         guard let object = selectedCharacterEntity, var pose = workspace.characterPose(of: object) else { return }
-        beginPoseDragIfNeeded()
-        if dragStartRotation?.joint != joint {
-            dragStartRotation = (joint, pose[joint])
+        if case .swing(let started, _) = dragStart, started == joint {} else {
+            beginPoseDrag()
+            dragStart = .swing(joint, pose[joint])
             selectJoint(joint)
         }
-        guard let start = dragStartRotation?.rotation else { return }
+        guard case .swing(_, let start) = dragStart else { return }
         pose[joint] = CharacterKinematics.swing(joint, startingAt: start, from: from, to: to)
         setPose(pose, on: object, grounded: false)
     }
 
-    // Pose Studio
+    /// Moves a hand or foot with a drag, bending the arm or leg to follow: `from` and `to`
+    /// are the drag's start and current points relative to the shoulder or hip, in the
+    /// solver's space. End with `endPoseDrag()`.
+    func dragHand(_ limb: Limb, from: SIMD3<Float>, to: SIMD3<Float>) {
+        guard let object = selectedCharacterEntity, let pose = workspace.characterPose(of: object),
+              let layout = workspace.rigLayout(of: object) else { return }
+        if case .hand(let started, _) = dragStart, started == limb {} else {
+            beginPoseDrag()
+            dragStart = .hand(limb, LimbIK.effector(of: limb, in: pose, layout: layout))
+            selectJoint(limb.end)
+        }
+        guard case .hand(_, let start) = dragStart else { return }
+        let bend = LimbIK.bendDirection(of: limb, in: pose, layout: layout)
+        solveReach(limb, target: start + (to - from), bendDirection: bend, grounded: false)
+    }
 
-    /// The large copy of the selected character shown in the Pose Studio window.
-    let poseStudio = PoseStudioScene()
-    var isPoseStudioOpen = false
+    private func beginPoseDrag() {
+        if !isPoseDragging {
+            isPoseDragging = true
+            beginPoseChange()
+        }
+    }
 
-    /// Keeps the studio's figure matching the selected character.
-    func updatePoseStudio() {
-        let recipe = isSelectedObjectCharacter ? selectedObject?.recipe : nil
-        let joint = characterEditMode == .pose ? selectedJoint : nil
-        poseStudio.show(recipe: recipe, pose: selectedCharacterPose, grounded: !isPoseDragging,
-                        selectedJoint: joint,
-                        showsReach: poseTool == .reach && joint.flatMap(Limb.init(end:)) != nil)
+    /// Finishes a drag: the body settles back onto its feet and the edit is saved.
+    func endPoseDrag() {
+        guard isPoseDragging else { return }
+        isPoseDragging = false
+        dragStart = nil
+        if let object = selectedCharacterEntity, let pose = workspace.characterPose(of: object) {
+            setPose(pose, on: object)
+        }
+        endPoseChange()
     }
 
     private func solveReach(_ limb: Limb, target: SIMD3<Float>, bendDirection: Float, grounded: Bool) {
@@ -809,21 +747,28 @@ class AppModel {
         exports.invalidate()
     }
 
-    /// Swaps an object's geometry, keeping a character's pose (or giving a new character one),
-    /// and keeping it in posing mode if it was being posed.
+    /// Swaps an object's geometry, keeping a character's pose (or giving a new character one).
     private func rebuildContent(of object: Entity, with content: Entity, recipe: ModelRecipe, pose: CharacterPose? = nil) {
-        let wasPosing = workspace.poseEditingTarget == object
-        if wasPosing { workspace.setPoseEditing(nil) }
         let previousPose = workspace.characterPose(of: object)
         workspace.replaceContent(of: object, with: content)
         if recipe.characterKind != nil {
             workspace.setCharacterPose(pose ?? previousPose ?? .neutral, on: object)
-            if wasPosing { workspace.setPoseEditing(object) }
         } else {
             object.components.remove(CharacterPoseComponent.self)
-            if wasPosing { endPosing() }
         }
         poseRevision &+= 1
+    }
+
+    // Pose Studio
+
+    /// The large copy of the selected character shown in the Pose Studio window.
+    let poseStudio = PoseStudioScene()
+    var isPoseStudioOpen = false
+
+    /// Keeps the studio's figure matching the selected character.
+    func updatePoseStudio() {
+        let recipe = isSelectedObjectCharacter ? selectedObject?.recipe : nil
+        poseStudio.show(recipe: recipe, pose: selectedCharacterPose, grounded: !isPoseDragging, selectedJoint: selectedJoint)
     }
 
     // MARK: Naming
@@ -868,7 +813,6 @@ class AppModel {
 
     func duplicateSelectedObject() {
         guard let summary = selectedObject, let object = workspace.object(withID: summary.id) else { return }
-        endPosing()
         animator.pause()
         checkpoint()
         let id = ObjectID()
@@ -961,11 +905,12 @@ class AppModel {
     }
 
     func selectObject(_ id: ObjectID?) {
-        if id != selectedObjectID { endPosing() }
+        if id != selectedObjectID {
+            endPoseDrag()
+            selectedJoint = nil
+        }
         selectedObjectID = id
         workspace.showSelection(on: id.flatMap { workspace.object(withID: $0) })
-        // With the Pose Studio open, a newly selected character is ready to pose there.
-        if isPoseStudioOpen && isSelectedObjectCharacter { setCharacterEditMode(.pose) }
     }
 
     func selectObject(containing entity: Entity) {
@@ -1544,6 +1489,12 @@ class AppModel {
         photos.setPrimary(photo)
         exports.invalidate()
         documentChanged()
+    }
+
+    /// Saves a pending scene edit into the selected keyframe now, instead of waiting for
+    /// objects to settle.
+    func finishSceneEdit() {
+        flushAutoSave()
     }
 
     /// Finishes a pending auto-save right away instead of waiting for objects to settle.

@@ -28,8 +28,6 @@ struct SelectionFollowComponent: Component {
     var rotateKnob: Entity
     var scaleKnob: Entity
     var toolbar: Entity
-    /// False while posing a character: the ring and knobs step aside, the toolbar stays.
-    var showsTransformHandles = true
 }
 
 /// Visible controls for the selected object: a ring with a knob to rotate it, a corner
@@ -93,12 +91,6 @@ final class SelectionHandles {
 
     var target: Entity? { root.components[SelectionFollowComponent.self]?.target }
 
-    func setShowsTransformHandles(_ shows: Bool) {
-        guard var follow = root.components[SelectionFollowComponent.self] else { return }
-        follow.showsTransformHandles = shows
-        root.components.set(follow)
-    }
-
     /// Where the handles are centered: the bottom center of the selected object, in world space.
     var pivot: SIMD3<Float> { root.position(relativeTo: nil) }
 }
@@ -142,9 +134,6 @@ struct SelectionFollowSystem: System {
             follow.scaleKnob.position = [(local.max.x - local.center.x) * scale + 0.007, height + 0.007,
                                          (local.max.z - local.center.z) * scale + 0.007]
             follow.toolbar.position = [0, height + 0.05, 0]
-            follow.ring.isEnabled = follow.showsTransformHandles
-            follow.rotateKnob.isEnabled = follow.showsTransformHandles
-            follow.scaleKnob.isEnabled = follow.showsTransformHandles
         }
     }
 }

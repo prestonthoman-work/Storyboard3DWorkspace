@@ -59,7 +59,6 @@ final class CompositionRenderer {
         let subject = scene.clone(recursive: true)
         subject.findEntity(named: WorkspaceScene.selectionIndicatorName)?.removeFromParent()
         subject.findEntity(named: WorkspaceScene.onionSkinName)?.removeFromParent()
-        CharacterBuilder.stripEditorOnly(from: subject)
         stripInteraction(from: subject)
         subject.transform = Transform(matrix: scene.transformMatrix(relativeTo: nil))
         return subject

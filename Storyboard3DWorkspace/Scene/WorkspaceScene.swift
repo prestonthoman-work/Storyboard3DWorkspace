@@ -86,14 +86,6 @@ final class WorkspaceScene {
     /// Keeps RealityView event subscriptions alive.
     var subscriptions: [EventSubscription] = []
 
-    /// The draggable target for placing a character's hand or foot. Outside the base, so
-    /// it's never in a capture.
-    let ikHandle = ModelEntity()
-    /// The character being posed, whose body parts are tappable instead of it moving as a whole.
-    var poseEditingTarget: Entity?
-    /// What the posing overlay currently shows.
-    var poseOverlay: PoseOverlay?
-
     init() {
         root.name = "WorkspaceRoot"
 
@@ -144,8 +136,6 @@ final class WorkspaceScene {
         viewfinderFlash.components.set(OpacityComponent(opacity: 0))
         viewfinder.addChild(viewfinderFlash)
         setViewfinder(lens: .standard, format: .widescreen)
-
-        setUpCharacterOverlay()
 
         earpiece.name = "Earpiece"
         earpieceSpeaker.components.set(AmbientAudioComponent(gain: 0))
@@ -393,7 +383,6 @@ final class WorkspaceScene {
 
     /// - Parameter animated: Shrink the object away instead of removing it instantly.
     func remove(_ object: Entity, animated: Bool = false) {
-        if poseEditingTarget == object { setPoseEditing(nil) }
         if selectionIndicator.parent == object { selectionIndicator.removeFromParent() }
         if handles.target == object { handles.setTarget(nil) }
         if animated { SceneFeedback.vanish(object) }
@@ -425,7 +414,7 @@ final class WorkspaceScene {
         guard let object else { return }
         // The collision box reflects the object's resting size even while it's popping in.
         let bounds = object.components[CollisionComponent.self]?.shapes.first?.bounds
-            ?? object.visualBounds(relativeTo: object, excludeInactive: true)
+            ?? Self.geometryBounds(of: object) ?? BoundingBox()
         let radius = max(bounds.extents.x, bounds.extents.z) * 0.65 + 0.006
         selectionIndicator.components.remove(ScaleSpringComponent.self)
         selectionIndicator.scale = [radius, 1, radius]
@@ -496,14 +485,28 @@ final class WorkspaceScene {
         }
     }
 
+    /// The bounds of an object's visible geometry in its own space, leaving out the selection ring.
+    ///
+    /// Works whether or not the workspace is on screen. (RealityKit counts every entity as
+    /// inactive while it isn't in a scene, so measuring "active" geometry finds nothing for
+    /// projects opened before the workspace.)
+    static func geometryBounds(of object: Entity) -> BoundingBox? {
+        var bounds: BoundingBox?
+        func visit(_ entity: Entity) {
+            guard entity.isEnabled, entity.name != selectionIndicatorName else { return }
+            if entity.components.has(ModelComponent.self) {
+                let own = entity.visualBounds(recursive: false, relativeTo: object, excludeInactive: false)
+                if !own.isEmpty { bounds = bounds.map { $0.union(own) } ?? own }
+            }
+            entity.children.forEach(visit)
+        }
+        object.children.forEach(visit)
+        return bounds
+    }
+
     /// A box around the object's geometry, in its own space.
     private func interactionShape(for object: Entity) -> ShapeResource {
-        // Measure the geometry only, never the selection ring.
-        let bounds = SceneFeedback.content(of: object)
-            .map { $0.visualBounds(relativeTo: object, excludeInactive: true) }
-            .filter { !$0.isEmpty }
-            .reduce(nil as BoundingBox?) { total, next in total.map { $0.union(next) } ?? next }
-            ?? object.visualBounds(relativeTo: object, excludeInactive: true)
+        let bounds = Self.geometryBounds(of: object) ?? BoundingBox(min: [-0.005, 0, -0.005], max: [0.005, 0.01, 0.005])
         let size = simd_max(bounds.extents, SIMD3(repeating: 0.01))
         return ShapeResource.generateBox(size: size).offsetBy(translation: bounds.center)
     }
@@ -511,13 +514,6 @@ final class WorkspaceScene {
     /// Refits the grab box after a character's pose changes its shape.
     func updateCollisionShape(of object: Entity) {
         object.components.set(CollisionComponent(shapes: [interactionShape(for: object)]))
-    }
-
-    /// Makes an object grabbable as one piece again (after posing).
-    func restoreInteraction(for object: Entity) {
-        let gravity = object.components[ObjectGravityComponent.self]
-        configureInteraction(for: object)
-        if let gravity { object.components.set(gravity) }
     }
 
     /// One collision box around the whole object so the system's manipulation gestures

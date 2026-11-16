@@ -116,7 +116,7 @@ struct ObjectsPanel: View {
     /// Edits for the selected object, right under its row.
     private func selectedActions(for object: AppModel.ObjectSummary) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if appModel.canRecolorSelectedObject && appModel.characterEditMode == .move {
+            if appModel.canRecolorSelectedObject {
                 ColorSwatches(selected: object.recipe.colorName) { appModel.recolorSelectedObject($0) }
             }
             if object.recipe.characterKind != nil {
@@ -256,10 +256,10 @@ private struct CharacterTray: View {
                     .buttonStyle(.plain)
                     .hoverEffect()
                     .accessibilityLabel("Add \(kind.name)")
-                    .help("Add a poseable \(kind.name.lowercased()). Select it, then choose Pose Character.")
+                    .help("Add a poseable \(kind.name.lowercased()). Pose it in the Pose Studio.")
                 }
             }
-            Text("Built-in characters can be posed joint by joint. Other objects, including generated ones, move as a whole.")
+            Text("Characters are posed in the Pose Studio. Other objects, including generated ones, move as a whole.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }

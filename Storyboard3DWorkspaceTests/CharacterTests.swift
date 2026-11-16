@@ -98,6 +98,16 @@ struct CharacterRigTests {
         #expect(abs(a.interpolated(to: b, 0.5)[.rightShoulder].bend - 60) < 0.01)
     }
 
+    @Test func mirroringSwapsLeftAndRight() {
+        let pointing = PosePreset.pointing.pose
+        let mirrored = pointing.mirrored
+        #expect(mirrored[.leftShoulder] == pointing[.rightShoulder])
+        #expect(mirrored[.head].twist == -pointing[.head].twist)
+        #expect(mirrored.mirrored == pointing)
+        let frames = CharacterKinematics.frames(for: mirrored, layout: layout)
+        #expect(frames[.leftWrist]!.position.z - frames[.leftShoulder]!.position.z > 0.45) // now pointing with the left
+    }
+
     @Test func posesSaveAsReadableJSON() throws {
         let pose = PosePreset.running.pose
         let data = try JSONEncoder().encode(pose)
@@ -169,406 +179,398 @@ struct CharacterRigTests {
     }
 }
 
-/// Characters in the live app: placing, posing, keyframes, saving, and captures.
-@MainActor
-@Suite(.serialized)
-struct CharacterAppTests {
-    let storage: URL
+extension SharedStateTests {
+    /// Characters in the live app: placing, posing, keyframes, saving, and captures.
+    @MainActor
+    @Suite(.serialized)
+    struct CharacterAppTests {
+        let storage: URL
 
-    init() throws {
-        storage = FileManager.default.temporaryDirectory.appending(path: "CharacterAppTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
-        ProjectStore.storageOverride = storage
-    }
-
-    private func makeApp() async throws -> AppModel {
-        let app = AppModel()
-        await app.createProject()
-        _ = try #require(app.currentProject)
-        return app
-    }
-
-    private func addCharacter(_ kind: CharacterKind, to app: AppModel) throws -> (ObjectID, Entity) {
-        app.placeCharacter(kind)
-        let id = try #require(app.selectedObjectID)
-        return (id, try #require(app.workspace.object(withID: id)))
-    }
-
-    private func joint(_ joint: Joint, of object: Entity, in app: AppModel) -> Entity? {
-        app.workspace.jointEntity(joint, of: object)
-    }
-
-    /// The body's bounds in the placed object's space (editing aids excluded).
-    private func bodyBounds(of object: Entity) -> BoundingBox {
-        var bounds: BoundingBox?
-        func visit(_ entity: Entity) {
-            if entity.components.has(BodyPartComponent.self) {
-                let part = entity.visualBounds(relativeTo: object)
-                bounds = bounds.map { $0.union(part) } ?? part
-            }
-            entity.children.forEach(visit)
+        init() throws {
+            storage = FileManager.default.temporaryDirectory.appending(path: "CharacterAppTests-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+            ProjectStore.storageOverride = storage
         }
-        visit(object)
-        return bounds ?? BoundingBox()
-    }
 
-    /// Counts entities in a tree that match a condition.
-    private func count(in entity: Entity, where matches: (Entity) -> Bool) -> Int {
-        (matches(entity) ? 1 : 0) + entity.children.reduce(0) { $0 + count(in: $1, where: matches) }
-    }
+        private func makeApp() async throws -> AppModel {
+            let app = AppModel()
+            await app.createProject()
+            _ = try #require(app.currentProject)
+            return app
+        }
 
-    @Test func charactersArePlacedWithAFullRigAndStandOnTheBase() async throws {
-        let app = try await makeApp()
-        let (_, object) = try addCharacter(.mannequin, to: app)
-        let rig = try #require(CharacterBuilder.rig(in: object))
-        #expect(Set(CharacterBuilder.joints(in: rig).keys) == Set(Joint.allCases))
-        #expect(app.isSelectedObjectCharacter)
-        #expect(app.objects.map(\.name) == ["Mannequin"])
+        private func addCharacter(_ kind: CharacterKind, to app: AppModel) throws -> (ObjectID, Entity) {
+            app.placeCharacter(kind)
+            let id = try #require(app.selectedObjectID)
+            return (id, try #require(app.workspace.object(withID: id)))
+        }
 
-        // About 5 cm tall, with its feet at the object's origin.
-        let bounds = bodyBounds(of: object)
-        #expect(abs(bounds.min.y) < 0.001)
-        #expect(bounds.extents.y > 0.045 && bounds.extents.y < 0.055)
-    }
+        private func joint(_ joint: Joint, of object: Entity, in app: AppModel) -> Entity? {
+            app.workspace.jointEntity(joint, of: object)
+        }
 
-    @Test func twoCharactersPoseIndependently() async throws {
-        let app = try await makeApp()
-        let (first, firstEntity) = try addCharacter(.mannequin, to: app)
-        let (second, secondEntity) = try addCharacter(.child, to: app)
-        #expect(first != second)
+        /// The body's bounds in the placed object's space (editing aids excluded).
+        private func bodyBounds(of object: Entity) -> BoundingBox {
+            var bounds: BoundingBox?
+            func visit(_ entity: Entity) {
+                if entity.components.has(BodyPartComponent.self) {
+                    let part = entity.visualBounds(relativeTo: object)
+                    bounds = bounds.map { $0.union(part) } ?? part
+                }
+                entity.children.forEach(visit)
+            }
+            visit(object)
+            return bounds ?? BoundingBox()
+        }
 
-        app.selectObject(first)
-        app.applyPreset(.waving)
-        app.selectObject(second)
-        app.applyPreset(.sitting)
+        /// Counts entities in a tree that match a condition.
+        private func count(in entity: Entity, where matches: (Entity) -> Bool) -> Int {
+            (matches(entity) ? 1 : 0) + entity.children.reduce(0) { $0 + count(in: $1, where: matches) }
+        }
 
-        #expect(app.workspace.characterPose(of: firstEntity) == PosePreset.waving.pose)
-        #expect(app.workspace.characterPose(of: secondEntity) == PosePreset.sitting.pose)
-        #expect(app.objectNote == PosePreset.sitting.requirement)
-        #expect(app.objects.count == 2)
-    }
+        @Test func charactersArePlacedWithAFullRigAndStandOnTheBase() async throws {
+            let app = try await makeApp()
+            let (_, object) = try addCharacter(.mannequin, to: app)
+            let rig = try #require(CharacterBuilder.rig(in: object))
+            #expect(Set(CharacterBuilder.joints(in: rig).keys) == Set(Joint.allCases))
+            #expect(app.isSelectedObjectCharacter)
+            #expect(app.objects.map(\.name) == ["Mannequin"])
 
-    @Test func presetsKeepWhereTheCharacterStandsAndItsSize() async throws {
-        let app = try await makeApp()
-        let (_, object) = try addCharacter(.mannequin, to: app)
-        object.position = [0.05, 0, -0.03]
-        object.scale = [1.6, 1.6, 1.6]
-        object.orientation = simd_quatf(angle: 0.7, axis: [0, 1, 0])
-        let before = object.transform
-        app.applyPreset(.crouching)
-        #expect(object.transform == before)
-        // Crouching is shorter, but the feet stay on the ground.
-        let bounds = bodyBounds(of: object)
-        #expect(abs(bounds.min.y) < 0.001 && bounds.extents.y < 0.04)
-    }
+            // About 5 cm tall, with its feet at the object's origin.
+            let bounds = bodyBounds(of: object)
+            #expect(abs(bounds.min.y) < 0.001)
+            #expect(bounds.extents.y > 0.045 && bounds.extents.y < 0.055)
+        }
 
-    @Test func jointEditsUndoAndRedo() async throws {
-        let app = try await makeApp()
-        let (_, object) = try addCharacter(.mannequin, to: app)
-        app.setCharacterEditMode(.pose)
-        app.selectJoint(.leftElbow)
+        @Test func twoCharactersPoseIndependently() async throws {
+            let app = try await makeApp()
+            let (first, firstEntity) = try addCharacter(.mannequin, to: app)
+            let (second, secondEntity) = try addCharacter(.child, to: app)
+            #expect(first != second)
 
-        app.beginPoseChange()
-        app.setJointAngle(40, axis: .bend, of: .leftElbow)
-        app.setJointAngle(80, axis: .bend, of: .leftElbow)
-        app.endPoseChange()
-        app.nudgeJoint(.head, axis: .twist, by: 15)
-        #expect(app.workspace.characterPose(of: object)?[.leftElbow].bend == 80)
-        #expect(app.workspace.characterPose(of: object)?[.head].twist == 15)
+            app.selectObject(first)
+            app.applyPreset(.waving)
+            app.selectObject(second)
+            app.applyPreset(.sitting)
 
-        app.undo()
-        #expect(app.workspace.characterPose(of: object)?[.head].twist == 0)
-        #expect(app.workspace.characterPose(of: object)?[.leftElbow].bend == 80)
-        app.undo()
-        #expect(app.workspace.characterPose(of: object)?.isNeutral == true)
-        app.redo()
-        #expect(app.workspace.characterPose(of: object)?[.leftElbow].bend == 80)
+            #expect(app.workspace.characterPose(of: firstEntity) == PosePreset.waving.pose)
+            #expect(app.workspace.characterPose(of: secondEntity) == PosePreset.sitting.pose)
+            #expect(app.objectNote == PosePreset.sitting.requirement)
+            #expect(app.objects.count == 2)
+        }
 
-        app.resetJoint(.leftElbow)
-        #expect(app.workspace.characterPose(of: object)?.isNeutral == true)
-    }
+        @Test func presetsKeepWhereTheCharacterStandsAndItsSize() async throws {
+            let app = try await makeApp()
+            let (_, object) = try addCharacter(.mannequin, to: app)
+            object.position = [0.05, 0, -0.03]
+            object.scale = [1.6, 1.6, 1.6]
+            object.orientation = simd_quatf(angle: 0.7, axis: [0, 1, 0])
+            let before = object.transform
+            app.applyPreset(.crouching)
+            #expect(object.transform == before)
+            // Crouching is shorter, but the feet stay on the ground.
+            let bounds = bodyBounds(of: object)
+            #expect(abs(bounds.min.y) < 0.001 && bounds.extents.y < 0.04)
+        }
 
-    @Test func posingModeSwapsMovingForPickingBodyParts() async throws {
-        let app = try await makeApp()
-        let (_, object) = try addCharacter(.mannequin, to: app)
-        #expect(object.components.has(ManipulationComponent.self))
+        @Test func jointEditsUndoAndRedo() async throws {
+            let app = try await makeApp()
+            let (_, object) = try addCharacter(.mannequin, to: app)
+            app.selectJoint(.leftElbow)
 
-        app.setCharacterEditMode(.pose)
-        #expect(!object.components.has(ManipulationComponent.self))
-        let rightHand = try #require(joint(.rightWrist, of: object, in: app))
-        let handPart = try #require(rightHand.children.first { $0.components.has(BodyPartComponent.self) })
-        #expect(handPart.components.has(CollisionComponent.self))
+            app.beginPoseChange()
+            app.setJointAngle(40, axis: .bend, of: .leftElbow)
+            app.setJointAngle(80, axis: .bend, of: .leftElbow)
+            app.endPoseChange()
+            app.nudgeJoint(.head, axis: .twist, by: 15)
+            #expect(app.workspace.characterPose(of: object)?[.leftElbow].bend == 80)
+            #expect(app.workspace.characterPose(of: object)?[.head].twist == 15)
 
-        // Tapping a body part selects its joint instead of another object.
-        app.handleTap(on: handPart)
-        #expect(app.selectedJoint == .rightWrist)
+            app.undo()
+            #expect(app.workspace.characterPose(of: object)?[.head].twist == 0)
+            #expect(app.workspace.characterPose(of: object)?[.leftElbow].bend == 80)
+            app.undo()
+            #expect(app.workspace.characterPose(of: object)?.isNeutral == true)
+            app.redo()
+            #expect(app.workspace.characterPose(of: object)?[.leftElbow].bend == 80)
 
-        app.selectObject(nil)
-        #expect(app.characterEditMode == .move)
-        #expect(object.components.has(ManipulationComponent.self))
-        #expect(!handPart.components.has(CollisionComponent.self))
-    }
+            app.resetJoint(.leftElbow)
+            #expect(app.workspace.characterPose(of: object)?.isNeutral == true)
+        }
 
-    @Test func reachingWithAHandBendsTheArm() async throws {
-        let app = try await makeApp()
-        let (_, object) = try addCharacter(.mannequin, to: app)
-        app.setCharacterEditMode(.pose)
-        app.selectJoint(.rightWrist)
-        app.poseTool = .reach
+        @Test func inTheSceneACharacterIsAlwaysOneMovablePiece() async throws {
+            let app = try await makeApp()
+            let (_, object) = try addCharacter(.mannequin, to: app)
+            app.isPoseStudioOpen = true
+            app.selectJoint(.rightWrist)
+            app.applyPreset(.waving)
 
-        app.beginPoseChange()
-        app.setReach([0.15, -0.1, 0.35], of: .rightArm)
-        app.endPoseChange()
-        let reach = try #require(app.reach(of: .rightArm))
-        #expect(simd_distance(reach, [0.15, -0.1, 0.35]) < 0.01)
-        let pose = try #require(app.workspace.characterPose(of: object))
-        #expect(pose[.rightElbow].bend > 30)
+            // Posing never changes how the scene character is handled: it stays grabbable as a
+            // whole, and none of its body parts can be touched.
+            #expect(object.components.has(ManipulationComponent.self))
+            let rig = try #require(CharacterBuilder.rig(in: object))
+            #expect(count(in: rig) { $0.components.has(CollisionComponent.self) || $0.components.has(InputTargetComponent.self) } == 0)
 
-        app.beginPoseChange()
-        app.setBendDirection(35, of: .rightArm)
-        app.endPoseChange()
-        #expect(abs((app.bendDirection(of: .rightArm) ?? 0) - 35) < 3)
-        #expect(simd_distance(try #require(app.reach(of: .rightArm)), reach) < 0.01)
-    }
+            // Its grab box fits the posed body.
+            let box = try #require(object.components[CollisionComponent.self]?.shapes.first?.bounds)
+            #expect(box.extents.y > 0.04)
+        }
 
-    @Test func keyframesAnimateCharactersInTheBasesOwnSpace() async throws {
-        let app = try await makeApp()
-        let (first, firstEntity) = try addCharacter(.mannequin, to: app)
-        let (second, secondEntity) = try addCharacter(.stocky, to: app)
+        @Test func reachingWithAHandBendsTheArm() async throws {
+            let app = try await makeApp()
+            let (_, object) = try addCharacter(.mannequin, to: app)
+            app.selectJoint(.rightWrist)
 
-        app.addKeyframe()
-        // Second keyframe: both move and change pose.
-        app.addKeyframe()
-        app.selectObject(first)
-        app.applyPreset(.pointing)
-        firstEntity.position.x += 0.04
-        app.selectObject(second)
-        app.applyPreset(.crouching)
-        app.sceneEdited()
-        try await Task.sleep(for: .milliseconds(600))
+            app.beginPoseChange()
+            app.setReach([0.15, -0.1, 0.35], of: .rightArm)
+            app.endPoseChange()
+            let reach = try #require(app.reach(of: .rightArm))
+            #expect(simd_distance(reach, [0.15, -0.1, 0.35]) < 0.01)
+            let pose = try #require(app.workspace.characterPose(of: object))
+            #expect(pose[.rightElbow].bend > 30)
 
-        let keyframes = app.animator.timeline.keyframes
-        #expect(keyframes.count == 2)
-        #expect(keyframes[1].characterPoses[first] == PosePreset.pointing.pose)
-        #expect(keyframes[1].characterPoses[second] == PosePreset.crouching.pose)
-        #expect(keyframes[0].characterPoses[first]?.isNeutral == true)
+            app.beginPoseChange()
+            app.setBendDirection(35, of: .rightArm)
+            app.endPoseChange()
+            #expect(abs((app.bendDirection(of: .rightArm) ?? 0) - 35) < 3)
+            #expect(simd_distance(try #require(app.reach(of: .rightArm)), reach) < 0.01)
+        }
 
-        // Spinning the base doesn't change anything relative to it.
-        app.workspace.setBaseSpin(1.2)
-        app.scrubTimeline(to: 0.5, snapTolerance: 0)
-        let halfway = try #require(app.workspace.characterPose(of: firstEntity))
-        #expect(abs(halfway[.rightShoulder].bend - PosePreset.pointing.pose[.rightShoulder].bend / 2) < 0.5)
-        app.selectKeyframe(keyframes[1])
-        #expect(app.workspace.characterPose(of: secondEntity) == PosePreset.crouching.pose)
-        app.selectKeyframe(keyframes[0])
-        #expect(app.workspace.characterPose(of: secondEntity)?.isNeutral == true)
-    }
+        @Test func keyframesAnimateCharactersInTheBasesOwnSpace() async throws {
+            let app = try await makeApp()
+            let (first, firstEntity) = try addCharacter(.mannequin, to: app)
+            let (second, secondEntity) = try addCharacter(.stocky, to: app)
 
-    @Test func charactersSaveAndReopenWithTheirPosesAndKeyframes() async throws {
-        let app = try await makeApp()
-        let (id, _) = try addCharacter(.child, to: app)
-        app.recolorSelectedObject("red")
-        app.beginProportionsChange()
-        app.setSelectedCharacterProportions(CharacterProportions(height: 0.7, build: 1.2, head: 1.3, legs: 0.9))
-        app.endProportionsChange()
-        app.addKeyframe()
-        app.applyPreset(.lookingBack)
-        app.sceneEdited()
-        try await Task.sleep(for: .milliseconds(600))
-        let keyframe = try #require(app.animator.selectedKeyframeID)
-        app.setHolds(true, forKeyframe: keyframe)
-        app.saveNow()
-        let project = try #require(app.currentProject)
+            app.addKeyframe()
+            // Second keyframe: both move and change pose.
+            app.addKeyframe()
+            app.selectObject(first)
+            app.applyPreset(.pointing)
+            firstEntity.position.x += 0.04
+            app.selectObject(second)
+            app.applyPreset(.crouching)
+            app.sceneEdited()
+            app.finishSceneEdit()
 
-        let reopened = AppModel()
-        #expect(await reopened.openProject(try #require(reopened.projects.first { $0.id == project.id })))
-        let entity = try #require(reopened.workspace.object(withID: id))
-        #expect(reopened.workspace.characterPose(of: entity) == PosePreset.lookingBack.pose)
-        let summary = try #require(reopened.objects.first)
-        #expect(summary.recipe.colorName == "red")
-        #expect(summary.recipe.characterProportions?.head == 1.3)
-        let saved = try #require(reopened.animator.timeline.keyframes.first)
-        #expect(saved.characterPoses[id] == PosePreset.lookingBack.pose && saved.holds)
+            let keyframes = app.animator.timeline.keyframes
+            #expect(keyframes.count == 2)
+            #expect(keyframes[1].characterPoses[first] == PosePreset.pointing.pose)
+            #expect(keyframes[1].characterPoses[second] == PosePreset.crouching.pose)
+            #expect(keyframes[0].characterPoses[first]?.isNeutral == true)
 
-        // A duplicated project keeps them too.
-        reopened.duplicateProject(project.id)
-        let copy = try #require(reopened.projects.first { $0.name.hasSuffix("Copy") })
-        #expect(await reopened.openProject(copy))
-        #expect(reopened.workspace.object(withID: id).flatMap { reopened.workspace.characterPose(of: $0) } == PosePreset.lookingBack.pose)
-    }
+            // Spinning the base doesn't change anything relative to it.
+            app.workspace.setBaseSpin(1.2)
+            app.scrubTimeline(to: 0.5, snapTolerance: 0)
+            let halfway = try #require(app.workspace.characterPose(of: firstEntity))
+            #expect(abs(halfway[.rightShoulder].bend - PosePreset.pointing.pose[.rightShoulder].bend / 2) < 0.5)
+            app.selectKeyframe(keyframes[1])
+            #expect(app.workspace.characterPose(of: secondEntity) == PosePreset.crouching.pose)
+            app.selectKeyframe(keyframes[0])
+            #expect(app.workspace.characterPose(of: secondEntity)?.isNeutral == true)
+        }
 
-    @Test func duplicatingACharacterCopiesItsPose() async throws {
-        let app = try await makeApp()
-        _ = try addCharacter(.mannequin, to: app)
-        app.applyPreset(.armsCrossed)
-        app.duplicateSelectedObject()
-        let copy = try #require(app.selectedObjectID.flatMap { app.workspace.object(withID: $0) })
-        #expect(app.workspace.characterPose(of: copy) == PosePreset.armsCrossed.pose)
-        #expect(app.objects.map(\.name) == ["Mannequin", "Mannequin 2"])
-        // Each has its own pose from here on.
-        app.applyPreset(.standing)
-        #expect(app.workspace.characterPose(of: try #require(app.workspace.object(withID: app.objects[0].id))) == PosePreset.armsCrossed.pose)
-    }
+        @Test func charactersSaveAndReopenWithTheirPosesAndKeyframes() async throws {
+            let app = try await makeApp()
+            let (id, _) = try addCharacter(.child, to: app)
+            app.recolorSelectedObject("red")
+            app.beginProportionsChange()
+            app.setSelectedCharacterProportions(CharacterProportions(height: 0.7, build: 1.2, head: 1.3, legs: 0.9))
+            app.endProportionsChange()
+            app.addKeyframe()
+            app.applyPreset(.lookingBack)
+            app.sceneEdited()
+            app.finishSceneEdit()
+            let keyframe = try #require(app.animator.selectedKeyframeID)
+            app.setHolds(true, forKeyframe: keyframe)
+            app.saveNow()
+            let project = try #require(app.currentProject)
 
-    @Test func capturesShowTheKeyframePoseAndNoEditingAids() async throws {
-        let app = try await makeApp()
-        let (id, object) = try addCharacter(.mannequin, to: app)
-        app.addKeyframe()
-        app.applyPreset(.reaching)
-        app.sceneEdited()
-        try await Task.sleep(for: .milliseconds(600))
-        let keyframe = try #require(app.animator.selectedKeyframe)
+            let reopened = AppModel()
+            #expect(await reopened.openProject(try #require(reopened.projects.first { $0.id == project.id })))
+            let entity = try #require(reopened.workspace.object(withID: id))
+            #expect(reopened.workspace.characterPose(of: entity) == PosePreset.lookingBack.pose)
+            let summary = try #require(reopened.objects.first)
+            #expect(summary.recipe.colorName == "red")
+            #expect(summary.recipe.characterProportions?.head == 1.3)
+            let saved = try #require(reopened.animator.timeline.keyframes.first)
+            #expect(saved.characterPoses[id] == PosePreset.lookingBack.pose && saved.holds)
 
-        // Posing, with the joint markers out and the pose changed after the keyframe.
-        app.immersiveSpaceState = .open
-        app.setCharacterEditMode(.pose)
-        app.selectJoint(.rightWrist)
-        app.workspace.setPoseOverlay(app.poseOverlay)
-        app.workspace.setCharacterPose(.neutral, on: object)
-        let rig = try #require(CharacterBuilder.rig(in: object))
-        #expect(count(in: rig) { $0.name == CharacterBuilder.markerName && $0.isEnabled } == Joint.allCases.count)
+            // A duplicated project keeps them too.
+            reopened.duplicateProject(project.id)
+            let copy = try #require(reopened.projects.first { $0.name.hasSuffix("Copy") })
+            #expect(await reopened.openProject(copy))
+            #expect(reopened.workspace.object(withID: id).flatMap { reopened.workspace.characterPose(of: $0) } == PosePreset.lookingBack.pose)
+        }
 
-        let snapshot = app.workspace.snapshot(at: keyframe.poses, characterPoses: keyframe.characterPoses,
-                                              keyframedObjects: app.animator.timeline.keyframedObjectIDs)
-        #expect(count(in: snapshot) { $0.components.has(EditorOnlyComponent.self) } == 0)
-        #expect(count(in: snapshot) { $0.name == WorkspaceScene.ikHandleName } == 0)
-        // The snapshot shows the keyframe's pose; the live character is left as it was.
-        let snappedHand = try #require(snapshot.findEntity(named: "Joint.rightShoulder"))
-        #expect(abs(snappedHand.orientation.angle - CharacterKinematics.rotation(PosePreset.reaching.pose[.rightShoulder], for: .rightShoulder).angle) < 0.01)
-        #expect(app.workspace.characterPose(of: object)?.isNeutral == true)
+        @Test func duplicatingACharacterCopiesItsPose() async throws {
+            let app = try await makeApp()
+            _ = try addCharacter(.mannequin, to: app)
+            app.applyPreset(.armsCrossed)
+            app.duplicateSelectedObject()
+            let copy = try #require(app.selectedObjectID.flatMap { app.workspace.object(withID: $0) })
+            #expect(app.workspace.characterPose(of: copy) == PosePreset.armsCrossed.pose)
+            #expect(app.objects.map(\.name) == ["Mannequin", "Mannequin 2"])
+            // Each has its own pose from here on.
+            app.applyPreset(.standing)
+            #expect(app.workspace.characterPose(of: try #require(app.workspace.object(withID: app.objects[0].id))) == PosePreset.armsCrossed.pose)
+        }
 
-        // Playback hides the markers.
-        app.workspace.setCharacterPose(PosePreset.reaching.pose, on: object)
-        app.addKeyframe()
-        app.animator.play()
-        #expect(app.poseOverlay == nil)
-        app.animator.pause()
-        _ = id
-    }
+        @Test func capturesShowTheKeyframePoseAndNoEditingAids() async throws {
+            let app = try await makeApp()
+            let (id, object) = try addCharacter(.mannequin, to: app)
+            app.addKeyframe()
+            app.applyPreset(.reaching)
+            app.sceneEdited()
+            app.finishSceneEdit()
+            let keyframe = try #require(app.animator.selectedKeyframe)
 
-    @Test func savedPosesAreKeptForEveryProject() async throws {
-        let app = try await makeApp()
-        _ = try addCharacter(.mannequin, to: app)
-        app.applyPreset(.waving)
-        app.nudgeJoint(.head, axis: .side, by: 10)
-        app.saveCurrentPose(named: "Hello there")
-        #expect(app.savedPoses.map(\.name) == ["Hello there"])
+            // The live character has moved on since the keyframe, and the Pose Studio is open.
+            app.isPoseStudioOpen = true
+            app.selectJoint(.rightWrist)
+            app.updatePoseStudio()
+            app.workspace.setCharacterPose(.neutral, on: object)
 
-        let other = AppModel()
-        await other.createProject()
-        other.placeCharacter(.child)
-        let saved = try #require(other.savedPoses.first)
-        other.applyPose(saved.pose)
-        let child = try #require(other.selectedObjectID.flatMap { other.workspace.object(withID: $0) })
-        #expect(other.workspace.characterPose(of: child)?[.head].side == PosePreset.waving.pose[.head].side + 10)
+            let snapshot = app.workspace.snapshot(at: keyframe.poses, characterPoses: keyframe.characterPoses,
+                                                  keyframedObjects: app.animator.timeline.keyframedObjectIDs)
+            // Nothing from the studio is in the scene, and nothing in a capture can be touched.
+            #expect(count(in: snapshot) { $0.name == "PoseStudio" } == 0)
+            #expect(count(in: snapshot) { $0.components.has(CollisionComponent.self) || $0.components.has(InputTargetComponent.self) } == 0)
+            // The snapshot shows the keyframe's pose; the live character is left as it was.
+            let shoulder = try #require(snapshot.findEntity(named: "Joint.rightShoulder"))
+            #expect(abs(shoulder.orientation.angle - CharacterKinematics.rotation(PosePreset.reaching.pose[.rightShoulder], for: .rightShoulder).angle) < 0.01)
+            #expect(app.workspace.characterPose(of: object)?.isNeutral == true)
+            _ = id
+        }
 
-        other.deleteSavedPose(saved)
-        #expect(AppModel().savedPoses.isEmpty)
-    }
+        @Test func savedPosesAreKeptForEveryProject() async throws {
+            let app = try await makeApp()
+            _ = try addCharacter(.mannequin, to: app)
+            app.applyPreset(.waving)
+            app.nudgeJoint(.head, axis: .side, by: 10)
+            app.saveCurrentPose(named: "Hello there")
+            #expect(app.savedPoses.map(\.name) == ["Hello there"])
 
-    @Test func promptsNamingPeopleGivePoseableCharacters() async throws {
-        let service = SampleModelGenerationService()
-        #expect(try await service.generateObject(prompt: "a blue kid").recipe.characterKind == .child)
-        #expect(try await service.generateObject(prompt: "a man by a tree").recipe.characterKind == .mannequin)
-        #expect(try await service.generateObject(prompt: "a tree by a man").recipe.characterKind == nil)
+            let other = AppModel()
+            await other.createProject()
+            other.placeCharacter(.child)
+            let saved = try #require(other.savedPoses.first)
+            other.applyPose(saved.pose)
+            let child = try #require(other.selectedObjectID.flatMap { other.workspace.object(withID: $0) })
+            #expect(other.workspace.characterPose(of: child)?[.head].side == PosePreset.waving.pose[.head].side + 10)
+
+            other.deleteSavedPose(saved)
+            #expect(AppModel().savedPoses.isEmpty)
+        }
+
+        @Test func promptsNamingPeopleGivePoseableCharacters() async throws {
+            let service = SampleModelGenerationService()
+            #expect(try await service.generateObject(prompt: "a blue kid").recipe.characterKind == .child)
+            #expect(try await service.generateObject(prompt: "a man by a tree").recipe.characterKind == .mannequin)
+            #expect(try await service.generateObject(prompt: "a tree by a man").recipe.characterKind == nil)
+        }
     }
 }
 
-/// The Pose Studio: a large copy of the selected character, posed with drags.
-@MainActor
-@Suite(.serialized)
-struct PoseStudioTests {
-    init() throws {
-        let storage = FileManager.default.temporaryDirectory.appending(path: "PoseStudioTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
-        ProjectStore.storageOverride = storage
-    }
-
-    @Test func swingingFollowsTheDragFromWhereItStarted() {
-        // Dragging the hanging right arm from straight down to straight forward raises it forward.
-        let raised = CharacterKinematics.swing(.rightShoulder, startingAt: .zero, from: [0, -1, 0], to: [0, 0, 1])
-        #expect(abs(raised.bend - 90) < 0.5 && abs(raised.side) < 0.5)
-        // The same motion starting partway through only adds the difference.
-        let start = JointRotation(bend: 30)
-        let more = CharacterKinematics.swing(.rightShoulder, startingAt: start, from: [0, -1, 0], to: [0, -0.7071, 0.7071])
-        #expect(abs(more.bend - 75) < 0.5)
-        // A hinge only bends, and only within its limits.
-        let elbow = CharacterKinematics.swing(.leftElbow, startingAt: .zero, from: [0, -1, 0], to: [1, 0, -1])
-        #expect(elbow.twist == 0 && elbow.side == 0 && elbow.bend >= 0)
-        #expect(CharacterKinematics.swing(.leftKnee, startingAt: .zero, from: [0, -1, 0], to: [0, -1, 0]) == .zero)
-    }
-
-    @Test func theStudioMirrorsTheSelectedCharacterAtALargeSize() async throws {
-        let app = AppModel()
-        await app.createProject()
-        app.placeCharacter(.mannequin)
-        app.applyPreset(.waving)
-        app.isPoseStudioOpen = true
-        app.setCharacterEditMode(.pose)
-        app.updatePoseStudio()
-
-        let figure = try #require(app.poseStudio.character)
-        let shoulder = try #require(app.poseStudio.jointEntity(.rightShoulder))
-        #expect(shoulder.orientation == CharacterKinematics.rotation(PosePreset.waving.pose[.rightShoulder], for: .rightShoulder))
-        // About 55 cm tall, standing on the studio floor.
-        var bounds: BoundingBox?
-        func visit(_ entity: Entity) {
-            if entity.components.has(BodyPartComponent.self) {
-                let part = entity.visualBounds(relativeTo: app.poseStudio.root)
-                bounds = bounds.map { $0.union(part) } ?? part
-            }
-            entity.children.forEach(visit)
+extension SharedStateTests {
+    /// The Pose Studio: a large copy of the selected character, posed with drags.
+    @MainActor
+    @Suite(.serialized)
+    struct PoseStudioTests {
+        init() throws {
+            let storage = FileManager.default.temporaryDirectory.appending(path: "PoseStudioTests-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+            ProjectStore.storageOverride = storage
         }
-        visit(figure)
-        let size = try #require(bounds)
-        #expect(size.extents.y > 0.55 && size.extents.y < 0.72) // a little taller than standing, with the hand raised
-        #expect(abs(size.min.y) < 0.005)
 
-        // Recoloring rebuilds the studio figure; deselecting clears it.
-        app.recolorSelectedObject("blue")
-        app.updatePoseStudio()
-        #expect(app.poseStudio.character !== figure)
-        app.selectObject(nil)
-        app.updatePoseStudio()
-        #expect(app.poseStudio.character == nil)
-    }
+        @Test func swingingFollowsTheDragFromWhereItStarted() {
+            // Dragging the hanging right arm from straight down to straight forward raises it forward.
+            let raised = CharacterKinematics.swing(.rightShoulder, startingAt: .zero, from: [0, -1, 0], to: [0, 0, 1])
+            #expect(abs(raised.bend - 90) < 0.5 && abs(raised.side) < 0.5)
+            // The same motion starting partway through only adds the difference.
+            let start = JointRotation(bend: 30)
+            let more = CharacterKinematics.swing(.rightShoulder, startingAt: start, from: [0, -1, 0], to: [0, -0.7071, 0.7071])
+            #expect(abs(more.bend - 75) < 0.5)
+            // A hinge only bends, and only within its limits.
+            let elbow = CharacterKinematics.swing(.leftElbow, startingAt: .zero, from: [0, -1, 0], to: [1, 0, -1])
+            #expect(elbow.twist == 0 && elbow.side == 0 && elbow.bend >= 0)
+            #expect(CharacterKinematics.swing(.leftKnee, startingAt: .zero, from: [0, -1, 0], to: [0, -1, 0]) == .zero)
+        }
 
-    @Test func draggingInTheStudioPosesTheSceneCharacterAsOneUndoStep() async throws {
-        let app = AppModel()
-        await app.createProject()
-        app.placeCharacter(.mannequin)
-        let object = try #require(app.selectedObjectID.flatMap { app.workspace.object(withID: $0) })
-        app.isPoseStudioOpen = true
-        app.setCharacterEditMode(.pose)
-        app.updatePoseStudio()
-
-        // Grab the left forearm area and drag it forward, in several steps.
-        let studio = app.poseStudio
-        let elbow = try #require(studio.jointEntity(.leftElbow))
-        let start = elbow.position(relativeTo: nil) + [0, -0.06, 0]
-        for step in 1...5 {
-            let now = start + [0, Float(step) * 0.012, Float(step) * 0.012]
-            let from = try #require(studio.direction(from: .leftShoulder, to: start))
-            let to = try #require(studio.direction(from: .leftShoulder, to: now))
-            app.swingJoint(.leftShoulder, from: from, to: to)
+        @Test func theStudioMirrorsTheSelectedCharacterAtALargeSize() async throws {
+            let app = AppModel()
+            await app.createProject()
+            app.placeCharacter(.mannequin)
+            app.applyPreset(.waving)
+            app.isPoseStudioOpen = true
             app.updatePoseStudio()
+
+            let figure = try #require(app.poseStudio.character)
+            let shoulder = try #require(app.poseStudio.jointEntity(.rightShoulder))
+            #expect(shoulder.orientation == CharacterKinematics.rotation(PosePreset.waving.pose[.rightShoulder], for: .rightShoulder))
+            // About 55 cm tall, standing on the studio floor.
+            var bounds: BoundingBox?
+            func visit(_ entity: Entity) {
+                if entity.components.has(BodyPartComponent.self) {
+                    let part = entity.visualBounds(relativeTo: app.poseStudio.root)
+                    bounds = bounds.map { $0.union(part) } ?? part
+                }
+                entity.children.forEach(visit)
+            }
+            visit(figure)
+            let size = try #require(bounds)
+            #expect(size.extents.y > 0.55 && size.extents.y < 0.72) // a little taller than standing, with the hand raised
+            #expect(abs(size.min.y) < 0.005)
+
+            // Recoloring rebuilds the studio figure; deselecting clears it.
+            app.recolorSelectedObject("blue")
+            app.updatePoseStudio()
+            #expect(app.poseStudio.character !== figure)
+            app.selectObject(nil)
+            app.updatePoseStudio()
+            #expect(app.poseStudio.character == nil)
         }
-        app.endPoseDrag()
-        let pose = try #require(app.workspace.characterPose(of: object))
-        #expect(pose[.leftShoulder].bend > 10)
-        #expect(app.selectedJoint == .leftShoulder)
-        #expect(!app.isPoseDragging)
 
-        // Place the right hand with the reach target.
-        app.selectJoint(.rightWrist)
-        app.poseTool = .reach
-        app.dragReach(.rightArm, to: [-0.1, -0.2, 0.3])
-        app.endPoseDrag()
-        #expect(simd_distance(try #require(app.reach(of: .rightArm)), [0.1, -0.2, 0.3]) < 0.01)
+        @Test func draggingInTheStudioPosesTheSceneCharacterAsOneUndoStep() async throws {
+            let app = AppModel()
+            await app.createProject()
+            app.placeCharacter(.mannequin)
+            let object = try #require(app.selectedObjectID.flatMap { app.workspace.object(withID: $0) })
+            app.isPoseStudioOpen = true
+            app.updatePoseStudio()
 
-        app.undo()
-        #expect(app.workspace.characterPose(of: object)?[.rightElbow].bend == 0)
-        app.undo()
-        #expect(app.workspace.characterPose(of: object)?.isNeutral == true)
+            // Grab the left forearm area and drag it forward, in several steps.
+            let studio = app.poseStudio
+            let elbow = try #require(studio.jointEntity(.leftElbow))
+            let start = elbow.position(relativeTo: nil) + [0, -0.06, 0]
+            for step in 1...5 {
+                let now = start + [0, Float(step) * 0.012, Float(step) * 0.012]
+                let from = try #require(studio.direction(from: .leftShoulder, to: start))
+                let to = try #require(studio.direction(from: .leftShoulder, to: now))
+                app.swingJoint(.leftShoulder, from: from, to: to)
+                app.updatePoseStudio()
+            }
+            app.endPoseDrag()
+            let pose = try #require(app.workspace.characterPose(of: object))
+            #expect(pose[.leftShoulder].bend > 10)
+            #expect(app.selectedJoint == .leftShoulder)
+            #expect(!app.isPoseDragging)
+
+            // Grab the right hand and move it forward and up: it follows, and the arm bends.
+            let handStart = try #require(app.reach(of: .rightArm))
+            let wrist = try #require(studio.jointEntity(.rightWrist))
+            let grab = try #require(studio.limbSpacePoint(wrist.position(relativeTo: nil), for: .rightArm))
+            app.dragHand(.rightArm, from: grab, to: grab + [0, 0.2, 0.25])
+            app.updatePoseStudio()
+            app.endPoseDrag()
+            #expect(app.selectedJoint == .rightWrist)
+            let handEnd = try #require(app.reach(of: .rightArm))
+            #expect(simd_distance(handEnd, handStart + [0, 0.2, 0.25]) < 0.01)
+            #expect((app.workspace.characterPose(of: object)?[.rightElbow].bend ?? 0) > 20)
+
+            app.undo()
+            #expect(app.workspace.characterPose(of: object)?[.rightElbow].bend == 0)
+            app.undo()
+            #expect(app.workspace.characterPose(of: object)?.isNeutral == true)
+        }
     }
 }
