@@ -117,11 +117,11 @@ struct EnhancementAppTests {
                        camera: .looking(from: target + [0.4, 0.2, 0.4], at: target, lens: .normal))
 
         app.exportAnimatic()
-        for _ in 0..<600 where app.isExporting || app.exportedFile == nil && app.exportError == nil {
+        for _ in 0..<600 where app.exports.isExporting || app.exports.exportedFile == nil && app.exports.exportError == nil {
             try await Task.sleep(for: .milliseconds(100))
         }
-        #expect(app.exportError == nil)
-        let file = try #require(app.exportedFile)
+        #expect(app.exports.exportError == nil)
+        let file = try #require(app.exports.exportedFile)
         let duration = try await AVURLAsset(url: file.url).load(.duration).seconds
         // One second of motion plus the half-second hold on the last shot.
         #expect(abs(duration - 1.5) < 0.15)

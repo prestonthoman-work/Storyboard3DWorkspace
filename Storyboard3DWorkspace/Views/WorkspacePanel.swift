@@ -137,6 +137,7 @@ private struct PanelPage<Content: View>: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: UI.sectionSpacing) {
+                SaveErrorBanner()
                 if !appModel.isGuideHidden {
                     NextStepCard()
                         .transition(.move(edge: .top).combined(with: .opacity))
@@ -146,6 +147,7 @@ private struct PanelPage<Content: View>: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(.horizontal, 24)
             .padding(.bottom, 22)
+            .animation(.snappy, value: appModel.saveError)
             .navigationTitle(appModel.projectName)
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {

@@ -398,39 +398,102 @@ struct AppModelTests {
         #expect(!FileManager.default.fileExists(atPath: legacy.path(percentEncoded: false)))
     }
 
+    // MARK: Save failures
+
+    private func projectFolder(_ project: ProjectStore.Info) -> URL {
+        storage.appending(path: "Projects/\(project.id.uuidString)", directoryHint: .isDirectory)
+    }
+
+    @Test func aFailedSaveIsReportedAndKeptUntilItSucceeds() async throws {
+        let app = try await makeApp()
+        let project = try #require(app.currentProject)
+        app.saveNow()
+        // A file where the photos folder belongs makes every save fail.
+        let photos = projectFolder(project).appending(path: "photos")
+        try? FileManager.default.removeItem(at: photos)
+        try Data().write(to: photos)
+
+        _ = try await addObject("red house", to: app)
+        #expect(!app.saveNow())
+        #expect(app.saveError != nil)
+
+        // Switching projects would throw away the unsaved changes, so it's refused.
+        #expect(!(await app.createProject()))
+        #expect(app.currentProject?.id == project.id)
+        #expect(app.objects.count == 1)
+
+        try FileManager.default.removeItem(at: photos)
+        #expect(app.saveNow())
+        #expect(app.saveError == nil)
+
+        let relaunched = AppModel()
+        #expect(await relaunched.openProject(try #require(relaunched.projects.first { $0.id == project.id })))
+        #expect(relaunched.objects.map(\.name) == ["Red House"])
+    }
+
+    @Test func aDamagedProjectIsNotOpenedOrOverwritten() async throws {
+        let app = try await makeApp()
+        _ = try await addObject("house", to: app)
+        app.saveNow()
+        let damaged = try #require(app.currentProject)
+        let file = projectFolder(damaged).appending(path: "project.json")
+        let garbage = Data("not a project".utf8)
+        try garbage.write(to: file)
+
+        await app.createProject()
+        let fresh = try #require(app.currentProject)
+        #expect(!(await app.openProject(damaged)))
+        #expect(app.projectError != nil)
+        #expect(app.currentProject?.id == fresh.id)
+
+        app.saveNow()
+        #expect(try Data(contentsOf: file) == garbage)
+    }
+
+    @Test func aFailedRenameIsReported() async throws {
+        let app = try await makeApp()
+        let project = try #require(app.currentProject)
+        app.saveNow()
+        try FileManager.default.removeItem(at: projectFolder(project))
+
+        app.renameProject(project.id, to: "Gone")
+        #expect(app.projectError != nil)
+        #expect(app.currentProject?.name != "Gone")
+    }
+
     // MARK: Exports
 
     @Test func slideshowUsesTheChosenTiming() async throws {
         let app = try await makeApp()
-        let seconds = app.slideshowSecondsPerShot
-        let crossfade = app.slideshowCrossfade
+        let seconds = app.exports.slideshowSecondsPerShot
+        let crossfade = app.exports.slideshowCrossfade
         defer {
-            app.slideshowSecondsPerShot = seconds
-            app.slideshowCrossfade = crossfade
+            app.exports.slideshowSecondsPerShot = seconds
+            app.exports.slideshowCrossfade = crossfade
         }
 
         for _ in 0..<2 {
             app.addKeyframe()
             app.photos.add(solidImage(), lens: .normal, keyframe: try #require(app.animator.selectedKeyframeID))
         }
-        app.slideshowSecondsPerShot = 1.5
-        app.slideshowCrossfade = false
+        app.exports.slideshowSecondsPerShot = 1.5
+        app.exports.slideshowCrossfade = false
         await app.exportSlideshow()
-        let url = try #require(app.exportedFile?.url)
+        let url = try #require(app.exports.exportedFile?.url)
         let duration = try await AVURLAsset(url: url).load(.duration).seconds
         #expect(abs(duration - 3) < 0.05)
     }
 
     @Test func storyboardSheetPaginatesByLayout() async throws {
         let app = try await makeApp()
-        let layout = app.sheetLayout
-        defer { app.sheetLayout = layout }
+        let layout = app.exports.sheetLayout
+        defer { app.exports.sheetLayout = layout }
 
         for _ in 0..<7 { app.addKeyframe() }
         for (choice, pages) in [(StoryboardSheetExporter.Layout.two, 4), (.six, 2), (.twelve, 1)] {
-            app.sheetLayout = choice
+            app.exports.sheetLayout = choice
             app.exportStoryboardSheet()
-            let url = try #require(app.exportedFile?.url)
+            let url = try #require(app.exports.exportedFile?.url)
             let document = try #require(CGPDFDocument(url as CFURL))
             #expect(document.numberOfPages == pages)
         }

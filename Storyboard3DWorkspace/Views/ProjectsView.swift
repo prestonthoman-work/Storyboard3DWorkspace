@@ -38,14 +38,17 @@ struct ProjectsView: View {
     private func begin(_ starter: StarterScene) {
         isChoosingStarter = false
         Task {
-            await appModel.createProject(from: starter)
-            await enterWorkspace()
+            if await appModel.createProject(from: starter) {
+                await enterWorkspace()
+            }
         }
     }
 
     private var projectList: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
+
+            SaveErrorBanner()
 
             if let error = appModel.projectError {
                 StatusMessage(error, kind: .error)
@@ -156,8 +159,9 @@ struct ProjectsView: View {
     private func card(for project: ProjectStore.Info) -> some View {
         Button {
             Task {
-                await appModel.openProject(project)
-                await enterWorkspace()
+                if await appModel.openProject(project) {
+                    await enterWorkspace()
+                }
             }
         } label: {
             ZStack(alignment: .bottomLeading) {

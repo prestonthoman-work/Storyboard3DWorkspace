@@ -74,7 +74,6 @@ enum ProjectStore {
 
     /// Every project, most recently edited first.
     static func list() -> [Info] {
-        migrateSingleProjectIfNeeded()
         let folders = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
         return folders
             .compactMap { try? Data(contentsOf: $0.appending(path: "info.json")) }
@@ -91,7 +90,7 @@ enum ProjectStore {
 
     static func rename(_ project: UUID, to name: String) throws {
         guard var info = (try? Data(contentsOf: infoFile(project))).flatMap({ try? JSONDecoder().decode(Info.self, from: $0) })
-        else { return }
+        else { throw CocoaError(.fileReadNoSuchFile) }
         info.name = name
         try write(info)
     }
@@ -121,22 +120,19 @@ enum ProjectStore {
         try JSONEncoder().encode(info).write(to: infoFile(info.id), options: .atomic)
     }
 
-    /// Earlier versions kept a single project in `StoryboardProject/`. Move it into the
-    /// project list so nothing is lost.
-    private static func migrateSingleProjectIfNeeded() {
+    /// Earlier versions kept a single project in `StoryboardProject/`. Moves it into the
+    /// project list so nothing is lost. If the move fails, the old folder is left where it
+    /// is, so it can be tried again on the next call.
+    static func migrateLegacyProjectIfNeeded() throws {
         let files = FileManager.default
         let legacy = storage.appending(path: "StoryboardProject", directoryHint: .isDirectory)
         guard files.fileExists(atPath: legacy.appending(path: "project.json").path(percentEncoded: false)) else { return }
 
         let id = UUID()
         let modified = (try? files.attributesOfItem(atPath: legacy.appending(path: "project.json").path(percentEncoded: false))[.modificationDate]) as? Date
-        do {
-            try files.createDirectory(at: root, withIntermediateDirectories: true)
-            try files.moveItem(at: legacy, to: folder(id))
-            try write(Info(id: id, name: "My Storyboard", modified: modified ?? .now, coverPhotoID: nil))
-        } catch {
-            print("Storyboard 3D couldn't move the existing project into the project list: \(error)")
-        }
+        try files.createDirectory(at: root, withIntermediateDirectories: true)
+        try files.moveItem(at: legacy, to: folder(id))
+        try write(Info(id: id, name: "My Storyboard", modified: modified ?? .now, coverPhotoID: nil))
     }
 
     // MARK: Saving
@@ -183,11 +179,14 @@ enum ProjectStore {
 
     // MARK: Loading
 
-    /// A saved project, or nil if it has never been saved (or can't be read).
-    static func load(_ project: UUID) -> LoadedProject? {
-        guard let data = try? Data(contentsOf: projectFile(project)),
-              let saved = try? JSONDecoder().decode(SavedProject.self, from: data)
-        else { return nil }
+    /// A saved project, or nil if it has never been saved.
+    ///
+    /// Throws if the project file exists but can't be read or decoded, so a damaged
+    /// project is never mistaken for an empty one (and then saved over).
+    static func load(_ project: UUID) throws -> LoadedProject? {
+        let file = projectFile(project)
+        guard FileManager.default.fileExists(atPath: file.path(percentEncoded: false)) else { return nil }
+        let saved = try JSONDecoder().decode(SavedProject.self, from: Data(contentsOf: file))
 
         // Photos whose image files are missing are dropped rather than shown blank.
         let photos: [CapturedPhoto] = saved.state.photos.compactMap { entry in

@@ -293,7 +293,7 @@ private struct ExportButton: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        @Bindable var appModel = appModel
+        @Bindable var exports = appModel.exports
 
         Menu {
             Section {
@@ -307,37 +307,37 @@ private struct ExportButton: View {
                 Text("The animation as film: objects move while the camera glides between your keyframe photos' angles.")
             }
             Section("Slideshow Video") {
-                Picker("Seconds per Shot", selection: $appModel.slideshowSecondsPerShot) {
+                Picker("Seconds per Shot", selection: $exports.slideshowSecondsPerShot) {
                     ForEach([1.0, 1.5, 2, 3, 4, 5], id: \.self) { seconds in
                         Text(seconds.formatted(.number.precision(.fractionLength(0...1))) + " s").tag(seconds)
                     }
                 }
-                Toggle("Crossfade", isOn: $appModel.slideshowCrossfade)
-                Toggle("Shot Captions", isOn: $appModel.slideshowCaptions)
+                Toggle("Crossfade", isOn: $exports.slideshowCrossfade)
+                Toggle("Shot Captions", isOn: $exports.slideshowCaptions)
                 Button("Export Slideshow", systemImage: "film") {
                     Task { await appModel.exportSlideshow() }
                 }
                 .disabled(appModel.slideshowCoverage.withPhoto == 0)
             }
             Section("Storyboard Sheet (PDF)") {
-                Picker("Shots per Page", selection: $appModel.sheetLayout) {
+                Picker("Shots per Page", selection: $exports.sheetLayout) {
                     ForEach(StoryboardSheetExporter.Layout.allCases) { layout in
                         Text(layout.label).tag(layout)
                     }
                 }
-                Toggle("Include Notes", isOn: $appModel.sheetIncludesNotes)
+                Toggle("Include Notes", isOn: $exports.sheetIncludesNotes)
                 Button("Export Storyboard Sheet", systemImage: "doc.richtext") {
                     appModel.exportStoryboardSheet()
                 }
             }
         } label: {
-            if appModel.isExporting {
+            if exports.isExporting {
                 ProgressView()
             } else {
                 Label("Export", systemImage: "square.and.arrow.up")
             }
         }
-        .disabled(appModel.animator.timeline.keyframes.isEmpty || appModel.isExporting)
+        .disabled(appModel.animator.timeline.keyframes.isEmpty || exports.isExporting)
         .help("Export an animatic, a slideshow video, or a printable storyboard sheet")
     }
 }
@@ -348,8 +348,9 @@ private struct SlideshowExportStatus: View {
 
     var body: some View {
         let coverage = appModel.slideshowCoverage
+        let exports = appModel.exports
 
-        if let progress = appModel.animaticProgress {
+        if let progress = exports.animaticProgress {
             HStack(spacing: 12) {
                 ProgressView(value: progress)
                     .frame(maxWidth: .infinity)
@@ -360,9 +361,9 @@ private struct SlideshowExportStatus: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
             }
-        } else if let error = appModel.exportError {
+        } else if let error = exports.exportError {
             StatusMessage(error, kind: .error)
-        } else if let file = appModel.exportedFile {
+        } else if let file = exports.exportedFile {
             ShareLink(item: file.url) {
                 Label(file.shareTitle, systemImage: "square.and.arrow.up")
             }

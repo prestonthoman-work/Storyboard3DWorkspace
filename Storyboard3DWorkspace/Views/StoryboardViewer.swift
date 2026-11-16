@@ -36,7 +36,7 @@ struct StoryboardViewer: View {
     }
 
     /// Longer than the slideshow export default, so there's time to read the notes.
-    private var secondsPerShot: Double { max(appModel.slideshowSecondsPerShot, 2) + 1.5 }
+    private var secondsPerShot: Double { max(appModel.exports.slideshowSecondsPerShot, 2) + 1.5 }
 
     var body: some View {
         let shots = shots
