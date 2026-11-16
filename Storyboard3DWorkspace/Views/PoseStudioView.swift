@@ -55,15 +55,9 @@ struct PoseStudioView: View {
                 }
                 .onEnded { _ in turnStart = nil }
         )
-        .ornament(attachmentAnchor: .scene(.bottomFront), contentAlignment: .top) {
-            PoseStudioBar()
-                .padding(.top, 16)
-        }
         .ornament(attachmentAnchor: .scene(.trailing), contentAlignment: .leading) {
-            if appModel.isSelectedObjectCharacter {
-                PoseStudioPanel()
-                    .padding(.leading, 20)
-            }
+            PoseStudioPanel()
+                .padding(.leading, 20)
         }
         .onAppear {
             appModel.isPoseStudioOpen = true
@@ -79,46 +73,77 @@ struct PoseStudioView: View {
     }
 }
 
-// MARK: Bar
+// MARK: Panel
 
-/// Under the studio: which character, its poses, the view, and undo.
-private struct PoseStudioBar: View {
+/// Beside the studio: which character, undo, poses, the view, every body part, and exact
+/// control of the selected one.
+private struct PoseStudioPanel: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 8) {
+                    CharacterPicker()
+                    Spacer(minLength: 0)
+                    Button("Undo", systemImage: "arrow.uturn.backward") { appModel.undo() }
+                        .disabled(!appModel.canUndo)
+                        .help("Undo")
+                    Button("Redo", systemImage: "arrow.uturn.forward") { appModel.redo() }
+                        .disabled(!appModel.canRedo)
+                        .help("Redo")
+                }
+                .labelStyle(.iconOnly)
+                .buttonBorderShape(.circle)
+
+                if appModel.isSelectedObjectCharacter {
+                    HStack(spacing: 8) {
+                        PosesMenu()
+                        ViewAngleButtons()
+                            .labelStyle(.iconOnly)
+                            .buttonBorderShape(.circle)
+                        Spacer(minLength: 0)
+                        Button("Reset Whole Pose", systemImage: "arrow.counterclockwise") { appModel.resetPose() }
+                            .tint(.red)
+                            .disabled(appModel.selectedCharacterPose?.isNeutral ?? true)
+                            .help("Straighten every joint. The character stays where it is in the scene.")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    Divider()
+
+                    BodyPartPicker()
+                    if let joint = appModel.selectedJoint {
+                        JointEditor(joint: joint)
+                    } else {
+                        Label("Pinch any body part and drag it. Grab a hand or foot to place it; the arm or leg bends to follow.",
+                              systemImage: "hand.pinch")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let error = appModel.poseLibraryError {
+                        StatusMessage(error, kind: .error)
+                    }
+                    if let note = appModel.objectNote, PosePreset.allCases.contains(where: { $0.requirement == note }) {
+                        StatusMessage(note, kind: .warning)
+                    }
+                }
+            }
+            .padding(20)
+        }
+        .frame(width: 460, height: 640)
+        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+}
+
+/// Presets, saved poses, mirroring, and saving the current pose.
+private struct PosesMenu: View {
     @Environment(AppModel.self) private var appModel
     @State private var isNamingPose = false
     @State private var poseName = ""
 
     var body: some View {
-        HStack(spacing: 10) {
-            CharacterPicker()
-
-            if appModel.isSelectedObjectCharacter {
-                Divider().frame(height: 28)
-                posesMenu
-                Divider().frame(height: 28)
-                ViewAngleButtons()
-                Divider().frame(height: 28)
-                Button("Undo", systemImage: "arrow.uturn.backward") { appModel.undo() }
-                    .disabled(!appModel.canUndo)
-                    .help("Undo")
-                Button("Redo", systemImage: "arrow.uturn.forward") { appModel.redo() }
-                    .disabled(!appModel.canRedo)
-                    .help("Redo")
-            }
-        }
-        .labelStyle(.iconOnly)
-        .buttonBorderShape(.circle)
-        .padding(10)
-        .glassBackgroundEffect(in: Capsule())
-        .alert("Save Pose", isPresented: $isNamingPose) {
-            TextField("Name", text: $poseName)
-            Button("Save") { appModel.saveCurrentPose(named: poseName) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Saved poses can be used on any character, in any project.")
-        }
-    }
-
-    private var posesMenu: some View {
         Menu {
             Section("Start From") {
                 ForEach(PosePreset.allCases) { preset in
@@ -140,8 +165,6 @@ private struct PoseStudioBar: View {
                     poseName = ""
                     isNamingPose = true
                 }
-                Button("Reset Pose", systemImage: "arrow.counterclockwise") { appModel.resetPose() }
-                    .disabled(appModel.selectedCharacterPose?.isNeutral ?? true)
                 if !appModel.savedPoses.isEmpty {
                     Menu("Delete Saved Pose", systemImage: "trash") {
                         ForEach(appModel.savedPoses) { saved in
@@ -153,7 +176,14 @@ private struct PoseStudioBar: View {
         } label: {
             Label("Poses", systemImage: "figure.dance")
         }
-        .help("Presets, your saved poses, mirror, and reset")
+        .help("Presets, your saved poses, mirror, and save")
+        .alert("Save Pose", isPresented: $isNamingPose) {
+            TextField("Name", text: $poseName)
+            Button("Save") { appModel.saveCurrentPose(named: poseName) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Saved poses can be used on any character, in any project.")
+        }
     }
 }
 
@@ -216,50 +246,18 @@ private struct ViewAngleButtons: View {
     }
 }
 
-// MARK: Panel
-
-/// Beside the studio: every body part, and exact control of the selected one.
-private struct PoseStudioPanel: View {
-    @Environment(AppModel.self) private var appModel
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                BodyPartPicker()
-                if let joint = appModel.selectedJoint {
-                    JointEditor(joint: joint)
-                } else {
-                    Label("Pinch any body part and drag it. Grab a hand or foot to place it; the arm or leg bends to follow.",
-                          systemImage: "hand.pinch")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                if let error = appModel.poseLibraryError {
-                    StatusMessage(error, kind: .error)
-                }
-                if let note = appModel.objectNote, PosePreset.allCases.contains(where: { $0.requirement == note }) {
-                    StatusMessage(note, kind: .warning)
-                }
-            }
-            .padding(20)
-        }
-        .frame(width: 400, height: 580)
-        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-    }
-}
-
 /// Every joint grouped by body region, as large tap targets.
 private struct BodyPartPicker: View {
     @Environment(AppModel.self) private var appModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             ForEach(Joint.Region.allCases) { region in
+                Text(region.title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, region == .body ? 0 : 2)
                 HStack(spacing: 6) {
-                    Text(region.title)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 82, alignment: .leading)
                     ForEach(region.joints) { joint in
                         let isSelected = joint == appModel.selectedJoint
                         let isPosed = !(appModel.selectedCharacterPose?[joint].isZero ?? true)
@@ -267,9 +265,11 @@ private struct BodyPartPicker: View {
                             appModel.selectJoint(isSelected ? nil : joint)
                         } label: {
                             Text(shortName(joint))
-                                .font(.caption.weight(isSelected || isPosed ? .semibold : .regular))
+                                .font(.callout.weight(isSelected || isPosed ? .semibold : .regular))
+                                .lineLimit(1)
+                                .fixedSize()
                                 .foregroundStyle(isSelected ? AnyShapeStyle(.white) : isPosed ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                                .padding(.horizontal, 10)
+                                .padding(.horizontal, 12)
                                 .padding(.vertical, 7)
                                 .background(isSelected ? AnyShapeStyle(Color(uiColor: PoseStudioScene.highlightColor).opacity(0.75))
                                                        : AnyShapeStyle(.white.opacity(isPosed ? 0.14 : 0.06)),
@@ -303,12 +303,15 @@ private struct JointEditor: View {
             HStack {
                 Text(joint.displayName)
                     .font(.headline)
-                Spacer()
-                Button("Straighten", systemImage: "arrow.counterclockwise") { appModel.resetJoint(joint) }
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Button("Reset \(joint.displayName)", systemImage: "arrow.counterclockwise") { appModel.resetJoint(joint) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    .tint(.orange)
+                    .lineLimit(1)
                     .disabled(appModel.selectedCharacterPose?[joint].isZero ?? true)
-                    .help("Put just this joint back to straight")
+                    .help("Straighten just this body part")
             }
 
             ForEach(joint.axes) { axis in
