@@ -29,6 +29,8 @@ struct ProjectState: Codable, Equatable {
         var recipe: ModelRecipe
         var transform: CodableTransform
         var isVisible: Bool
+        /// A character's body pose. Nil for ordinary objects.
+        var characterPose: CharacterPose?
     }
 
     struct KeyframeState: Codable, Equatable {
@@ -38,6 +40,9 @@ struct ProjectState: Codable, Equatable {
         /// Optional so projects saved before notes existed still load.
         var note: String?
         var shotType: ShotType?
+        // Optional so projects saved before characters existed still load.
+        var characterPoses: [ObjectID: CharacterPose]?
+        var holds: Bool?
     }
 
     struct Photo: Codable, Equatable {
@@ -88,13 +93,15 @@ struct CodableTransform: Codable, Equatable {
 extension Keyframe {
     init(_ state: ProjectState.KeyframeState) {
         self.init(id: state.id, time: state.time, poses: state.poses.mapValues(\.transform), note: state.note ?? "",
-                  shotType: state.shotType)
+                  shotType: state.shotType, characterPoses: state.characterPoses ?? [:], holds: state.holds ?? false)
     }
 }
 
 extension ProjectState.KeyframeState {
     init(_ keyframe: Keyframe) {
         self.init(id: keyframe.id, time: keyframe.time, poses: keyframe.poses.mapValues { CodableTransform($0) },
-                  note: keyframe.note.isEmpty ? nil : keyframe.note, shotType: keyframe.shotType)
+                  note: keyframe.note.isEmpty ? nil : keyframe.note, shotType: keyframe.shotType,
+                  characterPoses: keyframe.characterPoses.isEmpty ? nil : keyframe.characterPoses,
+                  holds: keyframe.holds ? true : nil)
     }
 }

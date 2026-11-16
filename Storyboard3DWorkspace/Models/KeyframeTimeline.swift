@@ -17,6 +17,11 @@ struct Keyframe: Identifiable {
     var note = ""
     /// How the shot is framed: wide, close-up, and so on.
     var shotType: ShotType?
+    /// Each character's body pose. Where the character stands is in `poses`.
+    var characterPoses: [ObjectID: CharacterPose] = [:]
+    /// Hold this keyframe until the next one, then cut, instead of easing between them.
+    /// For storyboards made of distinct poses rather than smooth animation.
+    var holds = false
 }
 
 /// An ordered list of keyframes, each at its own time, with eased interpolation between them.
@@ -48,8 +53,8 @@ struct KeyframeTimeline {
     }
 
     @discardableResult
-    mutating func append(_ poses: [ObjectID: Transform]) -> Keyframe {
-        let keyframe = Keyframe(time: keyframes.isEmpty ? 0 : duration + Self.spacing, poses: poses)
+    mutating func append(_ poses: [ObjectID: Transform], characters: [ObjectID: CharacterPose] = [:]) -> Keyframe {
+        let keyframe = Keyframe(time: keyframes.isEmpty ? 0 : duration + Self.spacing, poses: poses, characterPoses: characters)
         keyframes.append(keyframe)
         return keyframe
     }
@@ -57,13 +62,15 @@ struct KeyframeTimeline {
     /// Adds a keyframe right after another one. Everything later moves back one `spacing`,
     /// so the timing between the existing keyframes doesn't change.
     @discardableResult
-    mutating func insert(_ poses: [ObjectID: Transform], after id: Keyframe.ID, note: String = "",
-                         shotType: ShotType? = nil) -> Keyframe? {
+    mutating func insert(_ poses: [ObjectID: Transform], characters: [ObjectID: CharacterPose] = [:],
+                         after id: Keyframe.ID, note: String = "", shotType: ShotType? = nil,
+                         holds: Bool = false) -> Keyframe? {
         guard let index = index(of: id) else { return nil }
         for later in keyframes.indices where later > index {
             keyframes[later].time += Self.spacing
         }
-        let keyframe = Keyframe(time: keyframes[index].time + Self.spacing, poses: poses, note: note, shotType: shotType)
+        let keyframe = Keyframe(time: keyframes[index].time + Self.spacing, poses: poses, note: note, shotType: shotType,
+                                characterPoses: characters, holds: holds)
         keyframes.insert(keyframe, at: index + 1)
         return keyframe
     }
@@ -71,12 +78,13 @@ struct KeyframeTimeline {
     /// Adds a keyframe at a moment between two others, without moving any.
     /// - Returns: Nil when `time` is outside the timeline or too close to a keyframe.
     @discardableResult
-    mutating func insert(_ poses: [ObjectID: Transform], at time: TimeInterval) -> Keyframe? {
+    mutating func insert(_ poses: [ObjectID: Transform], characters: [ObjectID: CharacterPose] = [:],
+                         at time: TimeInterval) -> Keyframe? {
         guard let next = keyframes.firstIndex(where: { $0.time > time }), next > 0,
               time - keyframes[next - 1].time >= Self.minimumGap / 2,
               keyframes[next].time - time >= Self.minimumGap / 2
         else { return nil }
-        let keyframe = Keyframe(time: time, poses: poses)
+        let keyframe = Keyframe(time: time, poses: poses, characterPoses: characters)
         keyframes.insert(keyframe, at: next)
         return keyframe
     }
@@ -85,7 +93,8 @@ struct KeyframeTimeline {
     @discardableResult
     mutating func duplicate(_ id: Keyframe.ID) -> Keyframe? {
         guard let original = keyframe(id) else { return nil }
-        return insert(original.poses, after: id, note: original.note, shotType: original.shotType)
+        return insert(original.poses, characters: original.characterPoses, after: id, note: original.note,
+                      shotType: original.shotType, holds: original.holds)
     }
 
     /// The time a keyframe would land at if dragged to `time`: snapped to the grid and kept
@@ -109,9 +118,15 @@ struct KeyframeTimeline {
         return true
     }
 
-    mutating func update(_ id: Keyframe.ID, with poses: [ObjectID: Transform]) {
+    mutating func update(_ id: Keyframe.ID, with poses: [ObjectID: Transform], characters: [ObjectID: CharacterPose] = [:]) {
         guard let index = index(of: id) else { return }
         keyframes[index].poses = poses
+        keyframes[index].characterPoses = characters
+    }
+
+    mutating func setHolds(_ holds: Bool, for id: Keyframe.ID) {
+        guard let index = index(of: id) else { return }
+        keyframes[index].holds = holds
     }
 
     mutating func setShotType(_ shotType: ShotType?, for id: Keyframe.ID) {
@@ -191,8 +206,24 @@ struct KeyframeTimeline {
 
         var result: [ObjectID: Transform] = [:]
         for objectID in governing.poses.keys {
-            let track = keyframes.compactMap { keyframe in keyframe.poses[objectID].map { (keyframe.time, $0) } }
+            let track = keyframes.compactMap { keyframe in keyframe.poses[objectID].map { (keyframe.time, $0, keyframe.holds) } }
             if let pose = Self.interpolate(track, at: time) { result[objectID] = pose }
+        }
+        return result
+    }
+
+    /// Each visible character's body pose at `time`, blended between keyframes the same
+    /// way as positions (and held, where a keyframe holds).
+    func characterPoses(at time: TimeInterval) -> [ObjectID: CharacterPose] {
+        guard let governing = keyframes.last(where: { $0.time <= time + 1e-6 }) ?? keyframes.first else { return [:] }
+
+        var result: [ObjectID: CharacterPose] = [:]
+        for objectID in governing.characterPoses.keys where governing.poses[objectID] != nil {
+            let track = keyframes.compactMap { keyframe in
+                keyframe.characterPoses[objectID].map { (time: keyframe.time, pose: $0, holds: keyframe.holds) }
+            }
+            guard let (from, to, t) = Self.segment(of: track.map { ($0.time, $0.holds) }, at: time) else { continue }
+            result[objectID] = track[from].pose.interpolated(to: track[to].pose, t)
         }
         return result
     }
@@ -203,26 +234,35 @@ struct KeyframeTimeline {
         var changed: [Keyframe.ID] = []
         for index in keyframes.indices where keyframes[index].poses[objectID] != nil {
             keyframes[index].poses[objectID] = nil
+            keyframes[index].characterPoses[objectID] = nil
             changed.append(keyframes[index].id)
         }
         return changed
     }
 
-    private static func interpolate(_ track: [(time: TimeInterval, pose: Transform)], at time: TimeInterval) -> Transform? {
+    /// Which two entries of a track `time` falls between, and how far along (eased).
+    /// A holding entry stays put until the next one.
+    private static func segment(of track: [(time: TimeInterval, holds: Bool)],
+                                at time: TimeInterval) -> (from: Int, to: Int, t: Float)? {
         guard let first = track.first, let last = track.last else { return nil }
-        if time <= first.time { return first.pose }
-        if time >= last.time { return last.pose }
+        if time <= first.time { return (0, 0, 0) }
+        if time >= last.time { return (track.count - 1, track.count - 1, 0) }
+        guard let next = track.firstIndex(where: { $0.time > time }), next > 0 else { return (track.count - 1, track.count - 1, 0) }
+        let from = track[next - 1]
+        if from.holds { return (next - 1, next - 1, 0) }
+        let linear = Float((time - from.time) / (track[next].time - from.time))
+        return (next - 1, next, linear * linear * (3 - 2 * linear)) // smoothstep: ease in and out of each pose
+    }
 
-        guard let nextIndex = track.firstIndex(where: { $0.time > time }), nextIndex > 0 else { return last.pose }
-        let from = track[nextIndex - 1]
-        let to = track[nextIndex]
-        let linear = Float((time - from.time) / (to.time - from.time))
-        let eased = linear * linear * (3 - 2 * linear) // smoothstep: ease in and out of each pose
-
+    private static func interpolate(_ track: [(time: TimeInterval, pose: Transform, holds: Bool)],
+                                    at time: TimeInterval) -> Transform? {
+        guard let (fromIndex, toIndex, eased) = segment(of: track.map { ($0.time, $0.holds) }, at: time) else { return nil }
+        let from = track[fromIndex].pose, to = track[toIndex].pose
+        // simd_slerp takes the shortest arc, so a turn never spins the long way around.
         return Transform(
-            scale: mix(from.pose.scale, to.pose.scale, t: eased),
-            rotation: simd_slerp(from.pose.rotation, to.pose.rotation, eased),
-            translation: mix(from.pose.translation, to.pose.translation, t: eased)
+            scale: mix(from.scale, to.scale, t: eased),
+            rotation: simd_slerp(from.rotation, to.rotation, eased),
+            translation: mix(from.translation, to.translation, t: eased)
         )
     }
 }

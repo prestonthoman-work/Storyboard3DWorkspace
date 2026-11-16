@@ -42,9 +42,19 @@ class AppModel {
         let previous = animator.timeline.keyframes[index - 1]
         let moved = previous.poses.filter { id, pose in
             guard let now = selected.poses[id] else { return true }
+            if let before = previous.characterPoses[id], let after = selected.characterPoses[id], !before.matches(after) {
+                return true
+            }
             return !KeyframeTimeline.posesMatch([id: pose], [id: now])
         }
         return moved.isEmpty ? nil : moved
+    }
+
+    /// The body poses for characters in the onion skin, from the previous keyframe.
+    var onionSkinCharacterPoses: [ObjectID: CharacterPose] {
+        guard let ghosts = onionSkinPoses, let selected = animator.selectedKeyframe,
+              let index = animator.timeline.index(of: selected.id), index > 0 else { return [:] }
+        return animator.timeline.keyframes[index - 1].characterPoses.filter { ghosts[$0.key] != nil }
     }
 
     /// Floating name tags above objects in the room. Remembered across launches.
@@ -463,6 +473,310 @@ class AppModel {
                              note: nil))
     }
 
+    // MARK: Characters
+
+    /// Places a built-in poseable character.
+    func placeCharacter(_ kind: CharacterKind) {
+        animator.pause()
+        objectError = nil
+        let recipe = ModelRecipe.character(kind: kind.rawValue, color: nil, proportions: kind.proportions)
+        place(GeneratedModel(displayName: kind.name, source: .sample, recipe: recipe,
+                             entity: CharacterBuilder.make(kind, proportions: kind.proportions, tint: nil), note: nil))
+    }
+
+    enum CharacterEditMode: Hashable {
+        /// Pinch moves, turns, and resizes the whole character.
+        case move
+        /// Pinch picks body parts; the inspector turns joints.
+        case pose
+    }
+
+    /// How a selected hand or foot is edited.
+    enum PoseTool: Hashable {
+        /// Turn the joint itself.
+        case rotate
+        /// Place the hand or foot, and the arm or leg bends to reach it.
+        case reach
+    }
+
+    private(set) var characterEditMode: CharacterEditMode = .move
+    private(set) var selectedJoint: Joint?
+    var poseTool: PoseTool = .rotate
+    /// Poses saved for reuse, shared by every project.
+    private(set) var savedPoses: [SavedPose] = PoseLibraryStore.load()
+    private(set) var poseLibraryError: String?
+
+    var isSelectedObjectCharacter: Bool { selectedObject?.recipe.characterKind != nil }
+
+    private var selectedCharacterEntity: Entity? {
+        guard isSelectedObjectCharacter, let id = selectedObjectID else { return nil }
+        return workspace.object(withID: id)
+    }
+
+    /// Bumped on every pose change, so views reading the scene refresh.
+    private(set) var poseRevision = 0
+
+    /// Reading this makes a view refresh whenever a pose may have changed: an edit, undo or
+    /// redo, scrubbing, or playback.
+    private func observePoseChanges() {
+        _ = poseRevision
+        _ = animator.playhead
+        _ = undoStack.count
+        _ = redoStack.count
+    }
+
+    /// The selected character's current pose.
+    var selectedCharacterPose: CharacterPose? {
+        observePoseChanges()
+        return selectedCharacterEntity.flatMap { workspace.characterPose(of: $0) }
+    }
+
+    /// What the posing overlay should show right now. Nothing during playback, outside the
+    /// workspace, or when not posing.
+    var poseOverlay: PoseOverlay? {
+        guard characterEditMode == .pose, immersiveSpaceState == .open, !animator.isPlaying,
+              let id = selectedObjectID, isSelectedObjectCharacter else { return nil }
+        let reach = poseTool == .reach && selectedJoint.flatMap(Limb.init(end:)) != nil
+        return PoseOverlay(objectID: id, joint: selectedJoint, showsReachTarget: reach)
+    }
+
+    func setCharacterEditMode(_ mode: CharacterEditMode) {
+        guard mode != characterEditMode else { return }
+        if mode == .pose, let object = selectedCharacterEntity {
+            animator.pause()
+            flushAutoSave()
+            workspace.setPoseEditing(object)
+            characterEditMode = .pose
+            if selectedJoint == nil { selectedJoint = .chest }
+        } else {
+            endPosing()
+        }
+    }
+
+    /// Back to staging the scene: the character moves as a whole again.
+    func endPosing() {
+        guard characterEditMode != .move || workspace.poseEditingTarget != nil else { return }
+        workspace.setPoseEditing(nil)
+        characterEditMode = .move
+        selectedJoint = nil
+        poseTool = .rotate
+    }
+
+    func selectJoint(_ joint: Joint?) {
+        selectedJoint = joint
+        if joint.flatMap(Limb.init(end:)) == nil { poseTool = .rotate }
+    }
+
+    /// A tap in the scene: picks a body part while posing, otherwise selects an object.
+    func handleTap(on entity: Entity) {
+        if characterEditMode == .pose, let (object, joint) = workspace.joint(containing: entity),
+           workspace.objectID(of: object) == selectedObjectID {
+            selectJoint(joint)
+            return
+        }
+        selectObject(containing: entity)
+    }
+
+    /// Call when a joint slider is first touched, so one drag is one undo step.
+    func beginPoseChange() {
+        animator.pause()
+        checkpoint()
+    }
+
+    /// Call when a joint slider is let go: the pose is saved into the selected keyframe.
+    func endPoseChange() {
+        sceneEdited()
+    }
+
+    /// Sets one joint angle on the selected character, live (wrap in begin/endPoseChange).
+    func setJointAngle(_ value: Float, axis: JointAxis, of joint: Joint) {
+        guard let object = selectedCharacterEntity, var pose = workspace.characterPose(of: object) else { return }
+        var rotation = pose[joint]
+        rotation[axis] = value
+        pose[joint] = rotation
+        setPose(pose, on: object)
+    }
+
+    /// Steps one joint angle by a fixed amount, as its own undo step.
+    func nudgeJoint(_ joint: Joint, axis: JointAxis, by delta: Float) {
+        guard let pose = selectedCharacterPose else { return }
+        beginPoseChange()
+        setJointAngle(pose[joint][axis] + delta, axis: axis, of: joint)
+        endPoseChange()
+    }
+
+    func resetJoint(_ joint: Joint) {
+        guard let object = selectedCharacterEntity, var pose = workspace.characterPose(of: object), !pose[joint].isZero else { return }
+        beginPoseChange()
+        pose[joint] = .zero
+        setPose(pose, on: object)
+        endPoseChange()
+    }
+
+    /// Back to standing straight. Where the character stands and its size don't change.
+    func resetPose() {
+        applyPose(.neutral)
+    }
+
+    /// Replaces the selected character's pose, keeping its place in the scene and size.
+    func applyPose(_ pose: CharacterPose) {
+        guard let object = selectedCharacterEntity, let current = workspace.characterPose(of: object),
+              !current.matches(pose, tolerance: 0.01) else { return }
+        beginPoseChange()
+        setPose(pose, on: object)
+        endPoseChange()
+    }
+
+    func applyPreset(_ preset: PosePreset) {
+        applyPose(preset.pose)
+        objectNote = preset.requirement
+    }
+
+    /// Saves the selected character's pose for reuse in any project. A pose with the same
+    /// name is replaced.
+    func saveCurrentPose(named name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let pose = selectedCharacterPose else { return }
+        var poses = savedPoses
+        if let index = poses.firstIndex(where: { $0.name == name }) {
+            poses[index].pose = pose
+        } else {
+            poses.append(SavedPose(name: name, pose: pose))
+        }
+        storeSavedPoses(poses)
+    }
+
+    func deleteSavedPose(_ saved: SavedPose) {
+        storeSavedPoses(savedPoses.filter { $0.id != saved.id })
+    }
+
+    private func storeSavedPoses(_ poses: [SavedPose]) {
+        do {
+            try PoseLibraryStore.save(poses)
+            savedPoses = poses
+            poseLibraryError = nil
+        } catch {
+            poseLibraryError = "The pose couldn't be saved. \(error.localizedDescription)"
+        }
+    }
+
+    // Body shape
+
+    var selectedCharacterProportions: CharacterProportions? { selectedObject?.recipe.characterProportions }
+
+    /// Call when a proportion slider is first touched, so one drag is one undo step.
+    func beginProportionsChange() {
+        animator.pause()
+        checkpoint()
+    }
+
+    /// Reshapes the selected character, live. Its pose, place, and keyframes are kept.
+    func setSelectedCharacterProportions(_ proportions: CharacterProportions) {
+        guard let summary = selectedObject, case .character(let kind, let color, let current) = summary.recipe,
+              let object = workspace.object(withID: summary.id) else { return }
+        let proportions = proportions.clamped
+        guard proportions != current else { return }
+        let recipe = ModelRecipe.character(kind: kind, color: color, proportions: proportions)
+        guard let content = recipe.makeEntity() else { return }
+        rebuildContent(of: object, with: content, recipe: recipe)
+        updateSummary(summary.id) { ObjectSummary(id: $0.id, name: $0.name, source: $0.source, recipe: recipe) }
+        workspace.showSelection(on: object)
+        documentChanged()
+    }
+
+    func endProportionsChange() {
+        sceneEdited()
+    }
+
+    // Reaching with a hand or foot
+
+    /// The selected limb's hand or foot position relative to its shoulder or hip, at human
+    /// scale in meters: x outward from the body, y up, z forward.
+    func reach(of limb: Limb) -> SIMD3<Float>? {
+        observePoseChanges()
+        guard let object = selectedCharacterEntity, let pose = workspace.characterPose(of: object),
+              let layout = workspace.rigLayout(of: object) else { return nil }
+        var point = LimbIK.effector(of: limb, in: pose, layout: layout)
+        point.x *= limb.outward
+        return point
+    }
+
+    func bendDirection(of limb: Limb) -> Float? {
+        observePoseChanges()
+        guard let object = selectedCharacterEntity, let pose = workspace.characterPose(of: object),
+              let layout = workspace.rigLayout(of: object) else { return nil }
+        return LimbIK.bendDirection(of: limb, in: pose, layout: layout)
+    }
+
+    /// Moves the hand or foot to `reach` (as from `reach(of:)`), live; wrap in begin/endPoseChange.
+    func setReach(_ reach: SIMD3<Float>, of limb: Limb) {
+        var target = reach
+        target.x *= limb.outward
+        solveReach(limb, target: target, bendDirection: bendDirection(of: limb) ?? 0, grounded: true)
+    }
+
+    /// Turns the elbow or knee around the line to the hand or foot, live.
+    func setBendDirection(_ degrees: Float, of limb: Limb) {
+        guard let object = selectedCharacterEntity, let pose = workspace.characterPose(of: object),
+              let layout = workspace.rigLayout(of: object) else { return }
+        solveReach(limb, target: LimbIK.effector(of: limb, in: pose, layout: layout), bendDirection: degrees, grounded: true)
+    }
+
+    @ObservationIgnored private var isDraggingReach = false
+
+    /// The reach target was dragged to `point` (world space): the limb bends to follow.
+    func dragReachTarget(to point: SIMD3<Float>) {
+        guard let joint = selectedJoint, let limb = Limb(end: joint), let object = selectedCharacterEntity else { return }
+        if !isDraggingReach {
+            isDraggingReach = true
+            beginPoseChange()
+        }
+        workspace.moveReachTarget(to: point, isDragging: true)
+        guard let target = workspace.limbSpacePoint(point, for: limb, of: object) else { return }
+        // The body doesn't re-settle onto its feet mid-drag, so it doesn't shift under the hand.
+        solveReach(limb, target: target, bendDirection: bendDirection(of: limb) ?? 0, grounded: false)
+    }
+
+    func endReachDrag() {
+        guard isDraggingReach else { return }
+        isDraggingReach = false
+        workspace.moveReachTarget(to: .zero, isDragging: false)
+        if let object = selectedCharacterEntity, let pose = workspace.characterPose(of: object) {
+            setPose(pose, on: object)
+        }
+        endPoseChange()
+    }
+
+    private func solveReach(_ limb: Limb, target: SIMD3<Float>, bendDirection: Float, grounded: Bool) {
+        guard let object = selectedCharacterEntity, let pose = workspace.characterPose(of: object),
+              let layout = workspace.rigLayout(of: object) else { return }
+        let solved = LimbIK.solve(limb, reaching: target, bendDirection: bendDirection, pose: pose, layout: layout)
+        setPose(solved, on: object, grounded: grounded)
+    }
+
+    private func setPose(_ pose: CharacterPose, on object: Entity, grounded: Bool = true) {
+        workspace.setCharacterPose(pose, on: object, grounded: grounded)
+        poseRevision &+= 1
+        exports.invalidate()
+    }
+
+    /// Swaps an object's geometry, keeping a character's pose (or giving a new character one),
+    /// and keeping it in posing mode if it was being posed.
+    private func rebuildContent(of object: Entity, with content: Entity, recipe: ModelRecipe, pose: CharacterPose? = nil) {
+        let wasPosing = workspace.poseEditingTarget == object
+        if wasPosing { workspace.setPoseEditing(nil) }
+        let previousPose = workspace.characterPose(of: object)
+        workspace.replaceContent(of: object, with: content)
+        if recipe.characterKind != nil {
+            workspace.setCharacterPose(pose ?? previousPose ?? .neutral, on: object)
+            if wasPosing { workspace.setPoseEditing(object) }
+        } else {
+            object.components.remove(CharacterPoseComponent.self)
+            if wasPosing { endPosing() }
+        }
+        poseRevision &+= 1
+    }
+
     // MARK: Naming
 
     /// A name no other object has: "Tree", then "Tree 2", "Tree 3", so every object can be
@@ -494,6 +808,7 @@ class AppModel {
         let id = ObjectID()
         let name = uniqueObjectName(model.displayName)
         let object = workspace.addObject(model.entity, name: name, id: id)
+        if model.recipe.characterKind != nil { workspace.setCharacterPose(.neutral, on: object) }
         SceneFeedback.appear(object)
         objects.append(ObjectSummary(id: id, name: name, source: model.source, recipe: model.recipe))
         selectObject(id)
@@ -504,6 +819,7 @@ class AppModel {
 
     func duplicateSelectedObject() {
         guard let summary = selectedObject, let object = workspace.object(withID: summary.id) else { return }
+        endPosing()
         animator.pause()
         checkpoint()
         let id = ObjectID()
@@ -542,7 +858,7 @@ class AppModel {
         guard let content = recipe.makeEntity() else { return }
 
         checkpoint()
-        workspace.replaceContent(of: object, with: content)
+        rebuildContent(of: object, with: content, recipe: recipe)
         SceneFeedback.appear(object)
         let name = Self.isAutomaticName(summary.name, for: summary.recipe.defaultName)
             ? uniqueObjectName(recipe.defaultName ?? summary.name, excluding: summary.id)
@@ -567,7 +883,7 @@ class AppModel {
             let model = try await generationService.generateObject(prompt: prompt)
             guard let object = workspace.object(withID: summary.id) else { return }
             checkpoint()
-            workspace.replaceContent(of: object, with: model.entity)
+            rebuildContent(of: object, with: model.entity, recipe: model.recipe)
             SceneFeedback.appear(object)
             let name = uniqueObjectName(model.displayName, excluding: summary.id)
             object.name = name
@@ -596,6 +912,7 @@ class AppModel {
     }
 
     func selectObject(_ id: ObjectID?) {
+        if id != selectedObjectID { endPosing() }
         selectedObjectID = id
         workspace.showSelection(on: id.flatMap { workspace.object(withID: $0) })
     }
@@ -1002,7 +1319,8 @@ class AppModel {
                 continue
             }
             // One snapshot per keyframe, taken now, before anything else can change.
-            let snapshot = workspace.snapshot(at: keyframe.poses, keyframedObjects: animator.timeline.keyframedObjectIDs)
+            let snapshot = workspace.snapshot(at: keyframe.poses, characterPoses: keyframe.characterPoses,
+                                              keyframedObjects: animator.timeline.keyframedObjectIDs)
             for photo in affected {
                 if photo.camera != nil {
                     jobs.append((photo, snapshot))
@@ -1056,7 +1374,8 @@ class AppModel {
         defer { isCapturing = false }
 
         camera.lens = captureLens
-        let snapshot = workspace.snapshot(at: keyframe.poses, keyframedObjects: animator.timeline.keyframedObjectIDs)
+        let snapshot = workspace.snapshot(at: keyframe.poses, characterPoses: keyframe.characterPoses,
+                                          keyframedObjects: animator.timeline.keyframedObjectIDs)
         do {
             let image = try await CompositionRenderer().render(
                 snapshot: snapshot, backdrop: workspace.backdrop, backdropPose: photo.backdropPose?.transform,
@@ -1249,6 +1568,15 @@ class AppModel {
         documentChanged()
     }
 
+    /// Hold a keyframe's poses until the next keyframe and cut, instead of easing between them.
+    func setHolds(_ holds: Bool, forKeyframe id: Keyframe.ID) {
+        guard let keyframe = animator.timeline.keyframe(id), keyframe.holds != holds else { return }
+        checkpoint()
+        animator.setHolds(holds, for: id)
+        exports.invalidate()
+        documentChanged()
+    }
+
     func setNote(_ note: String, forKeyframe id: Keyframe.ID) {
         animator.setNote(note, for: id)
         exports.invalidate()
@@ -1303,7 +1631,7 @@ class AppModel {
             guard let entity = workspace.object(withID: summary.id) else { return nil }
             return ProjectState.Object(id: summary.id, name: summary.name, source: summary.source,
                                        recipe: summary.recipe, transform: CodableTransform(entity.transform),
-                                       isVisible: entity.isEnabled)
+                                       isVisible: entity.isEnabled, characterPose: workspace.characterPose(of: entity))
         }
         let generatedBy: ModelSource? = if case .generated(let source) = base.origin { source } else { nil }
 
@@ -1356,7 +1684,7 @@ class AppModel {
             if let existing = workspace.object(withID: object.id) {
                 entity = existing
                 if currentRecipes[object.id] != object.recipe, let content = object.recipe.makeEntity() {
-                    workspace.replaceContent(of: existing, with: content)
+                    rebuildContent(of: existing, with: content, recipe: object.recipe, pose: object.characterPose)
                 }
                 existing.name = object.name
             } else if let content = object.recipe.makeEntity() {
@@ -1366,6 +1694,10 @@ class AppModel {
             }
             entity.transform = object.transform.transform
             entity.isEnabled = object.isVisible
+            if object.recipe.characterKind != nil {
+                workspace.setCharacterPose(object.characterPose ?? .neutral, on: entity)
+                poseRevision &+= 1
+            }
             summaries.append(ObjectSummary(id: object.id, name: object.name, source: object.source, recipe: object.recipe))
         }
         objects = summaries

@@ -22,6 +22,7 @@ struct ObjectsPanel: View {
                         }
                     } content: {
                         CatalogTray()
+                        CharacterTray()
                         PromptField(placeholder: "Or describe one, like a red house",
                                     text: $appModel.objectPrompt,
                                     isWorking: appModel.isGeneratingObject,
@@ -115,8 +116,11 @@ struct ObjectsPanel: View {
     /// Edits for the selected object, right under its row.
     private func selectedActions(for object: AppModel.ObjectSummary) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if appModel.canRecolorSelectedObject {
+            if appModel.canRecolorSelectedObject && appModel.characterEditMode == .move {
                 ColorSwatches(selected: object.recipe.colorName) { appModel.recolorSelectedObject($0) }
+            }
+            if object.recipe.characterKind != nil {
+                CharacterInspector()
             }
 
             ViewThatFits(in: .horizontal) {
@@ -165,6 +169,9 @@ private struct ObjectThumbnail: View {
                     .resizable()
                     .scaledToFit()
                     .padding(3)
+            } else if let character = object.recipe.characterKind {
+                Image(systemName: character.symbol)
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
             } else {
                 Image(systemName: isSelected ? "cube.fill" : "cube")
                     .foregroundStyle(isSelected ? Color.accentColor : .secondary)
@@ -208,6 +215,54 @@ private struct ColorSwatches: View {
         .accessibilityLabel(label)
         .accessibilityAddTraits(selected == name ? .isSelected : [])
         .help(label)
+    }
+}
+
+/// The built-in poseable characters. Tap one to place it.
+private struct CharacterTray: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Characters")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+            HorizontalStrip {
+                ForEach(CharacterKind.allCases) { kind in
+                    Button {
+                        appModel.placeCharacter(kind)
+                    } label: {
+                        VStack(spacing: 6) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: UI.smallCorner, style: .continuous)
+                                    .fill(LinearGradient(colors: [.white.opacity(0.12), .white.opacity(0.03)],
+                                                         startPoint: .top, endPoint: .bottom))
+                                Image(systemName: kind.symbol)
+                                    .font(.system(size: kind == .child ? 30 : 38, weight: .light))
+                                    .foregroundStyle(Color(uiColor: CharacterBuilder.defaultColor(for: kind)))
+                            }
+                            .frame(width: 88, height: 88)
+                            .overlay {
+                                RoundedRectangle(cornerRadius: UI.smallCorner, style: .continuous)
+                                    .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                            }
+                            Text(kind.name)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .frame(width: 88)
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: UI.smallCorner, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .hoverEffect()
+                    .accessibilityLabel("Add \(kind.name)")
+                    .help("Add a poseable \(kind.name.lowercased()). Select it, then choose Pose Character.")
+                }
+            }
+            Text("Built-in characters can be posed joint by joint. Other objects, including generated ones, move as a whole.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
     }
 }
 

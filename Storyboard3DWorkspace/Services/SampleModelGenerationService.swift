@@ -15,6 +15,28 @@ struct SampleModelGenerationService: ModelGenerationService {
         let match = SampleObjectCatalog.match(prompt)
         let colorPrefix = match.colorName.map { "\($0.capitalized) " } ?? ""
 
+        // People get a built-in poseable character, when they're named before any object.
+        let words = SampleObjectCatalog.words(in: prompt)
+        let objectPosition = match.keyword.flatMap { SampleObjectCatalog.position(of: $0, in: words) } ?? .max
+        var person: (kind: CharacterKind, keyword: String, position: Int)?
+        for kind in CharacterKind.allCases {
+            for keyword in kind.keywords {
+                if let position = SampleObjectCatalog.position(of: keyword, in: words),
+                   position < objectPosition, person.map({ position < $0.position }) ?? true {
+                    person = (kind, keyword, position)
+                }
+            }
+        }
+        if let person {
+            return GeneratedModel(
+                displayName: colorPrefix + person.kind.name,
+                source: .sample,
+                recipe: .character(kind: person.kind.rawValue, color: match.colorName, proportions: person.kind.proportions),
+                entity: CharacterBuilder.make(person.kind, proportions: person.kind.proportions, tint: match.color),
+                note: "Sample: matched “\(person.keyword)” to the built-in \(person.kind.name.lowercased()). Switch to Pose to set its pose."
+            )
+        }
+
         guard let kind = match.kind, let keyword = match.keyword else {
             return GeneratedModel(
                 displayName: "\(colorPrefix)Placeholder",

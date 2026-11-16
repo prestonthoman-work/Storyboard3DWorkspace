@@ -17,6 +17,8 @@ extension ModelRecipe {
             return prefix + "Placeholder"
         case .baseTemplate(let name):
             return BaseTemplate(rawValue: name)?.name
+        case .character(let kind, _, _):
+            return CharacterKind(rawValue: kind).map { prefix + $0.name }
         }
     }
 
@@ -36,6 +38,9 @@ extension ModelRecipe {
         case .baseTemplate(let name):
             guard let template = BaseTemplate(rawValue: name) else { return nil }
             return BaseTemplateBuilder.make(template)
+        case .character(let kind, let color, let proportions):
+            guard let kind = CharacterKind(rawValue: kind) else { return nil }
+            return CharacterBuilder.make(kind, proportions: proportions, tint: SampleObjectCatalog.color(named: color))
         }
     }
 }

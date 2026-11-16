@@ -96,7 +96,10 @@ struct ObjectGravitySystem: System {
         let isOverBase = simd_length(SIMD2(bounds.center.x, bounds.center.z)) <= surface.baseRadius
         var floor: Float = isOverBase ? 0 : -surface.baseHeight
 
-        for other in objects where other != object && other.parent == container {
+        // Characters stand on the base or table, not on top of other objects, so a figure
+        // posed sitting on a prop keeps its feet on the ground.
+        let isCharacter = object.components.has(CharacterPoseComponent.self)
+        for other in objects where !isCharacter && other != object && other.parent == container {
             guard let otherBounds = geometryBounds(of: other, in: container),
                   footprintsOverlap(bounds, otherBounds),
                   otherBounds.max.y <= bounds.center.y

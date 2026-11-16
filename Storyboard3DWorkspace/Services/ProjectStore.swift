@@ -55,6 +55,8 @@ enum ProjectStore {
     static var storageOverride: URL?
 
     private static var storage: URL { storageOverride ?? URL.applicationSupportDirectory }
+    /// The folder that holds the project list and app-wide files such as saved poses.
+    static var storageRoot: URL { storage }
     private static var root: URL {
         storage.appending(path: "Projects", directoryHint: .isDirectory)
     }

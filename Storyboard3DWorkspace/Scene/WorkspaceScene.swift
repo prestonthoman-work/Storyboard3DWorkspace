@@ -86,6 +86,14 @@ final class WorkspaceScene {
     /// Keeps RealityView event subscriptions alive.
     var subscriptions: [EventSubscription] = []
 
+    /// The draggable target for placing a character's hand or foot. Outside the base, so
+    /// it's never in a capture.
+    let ikHandle = ModelEntity()
+    /// The character being posed, whose body parts are tappable instead of it moving as a whole.
+    var poseEditingTarget: Entity?
+    /// What the posing overlay currently shows.
+    var poseOverlay: PoseOverlay?
+
     init() {
         root.name = "WorkspaceRoot"
 
@@ -136,6 +144,8 @@ final class WorkspaceScene {
         viewfinderFlash.components.set(OpacityComponent(opacity: 0))
         viewfinder.addChild(viewfinderFlash)
         setViewfinder(lens: .standard, format: .widescreen)
+
+        setUpCharacterOverlay()
 
         earpiece.name = "Earpiece"
         earpieceSpeaker.components.set(AmbientAudioComponent(gain: 0))
@@ -383,6 +393,7 @@ final class WorkspaceScene {
 
     /// - Parameter animated: Shrink the object away instead of removing it instantly.
     func remove(_ object: Entity, animated: Bool = false) {
+        if poseEditingTarget == object { setPoseEditing(nil) }
         if selectionIndicator.parent == object { selectionIndicator.removeFromParent() }
         if handles.target == object { handles.setTarget(nil) }
         if animated { SceneFeedback.vanish(object) }
@@ -439,8 +450,10 @@ final class WorkspaceScene {
     }
 
     /// Poses objects for a moment in the animation. Keyframed objects without a pose are
-    /// hidden; objects that aren't in any keyframe are left alone.
-    func apply(_ poses: [ObjectID: Transform], keyframedObjects: Set<ObjectID>) {
+    /// hidden; objects that aren't in any keyframe are left alone. Characters with an entry
+    /// in `characterPoses` also take that body pose.
+    func apply(_ poses: [ObjectID: Transform], characterPoses: [ObjectID: CharacterPose] = [:],
+               keyframedObjects: Set<ObjectID>) {
         for object in objects {
             guard let id = objectID(of: object) else { continue }
             if let pose = poses[id] {
@@ -449,18 +462,26 @@ final class WorkspaceScene {
             } else if keyframedObjects.contains(id) {
                 object.isEnabled = false
             }
+            if let characterPose = characterPoses[id], isCharacter(object),
+               !(self.characterPose(of: object)?.matches(characterPose, tolerance: 0.01) ?? false) {
+                setCharacterPose(characterPose, on: object)
+            }
         }
     }
 
     /// A render-ready copy of the scene posed at a keyframe. The live objects are posed,
     /// copied, and put back within the same moment, so nothing visibly moves.
-    func snapshot(at poses: [ObjectID: Transform], keyframedObjects: Set<ObjectID>) -> Entity {
-        let saved = objects.map { ($0, $0.transform, $0.isEnabled) }
-        apply(poses, keyframedObjects: keyframedObjects)
+    func snapshot(at poses: [ObjectID: Transform], characterPoses: [ObjectID: CharacterPose] = [:],
+                  keyframedObjects: Set<ObjectID>) -> Entity {
+        let saved = objects.map { ($0, $0.transform, $0.isEnabled, characterPose(of: $0)) }
+        apply(poses, characterPoses: characterPoses, keyframedObjects: keyframedObjects)
         let snapshot = CompositionRenderer.snapshot(of: baseAnchor)
-        for (object, transform, isEnabled) in saved {
+        for (object, transform, isEnabled, characterPose) in saved {
             object.transform = transform
             object.isEnabled = isEnabled
+            if let characterPose, characterPoses[objectID(of: object) ?? UUID()] != nil {
+                setCharacterPose(characterPose, on: object)
+            }
         }
         return snapshot
     }
@@ -475,9 +496,8 @@ final class WorkspaceScene {
         }
     }
 
-    /// One collision box around the whole object so the system's manipulation gestures
-    /// (move, rotate, two-handed scale) treat it as a single piece.
-    private func configureInteraction(for object: Entity) {
+    /// A box around the object's geometry, in its own space.
+    private func interactionShape(for object: Entity) -> ShapeResource {
         // Measure the geometry only, never the selection ring.
         let bounds = SceneFeedback.content(of: object)
             .map { $0.visualBounds(relativeTo: object, excludeInactive: true) }
@@ -485,7 +505,25 @@ final class WorkspaceScene {
             .reduce(nil as BoundingBox?) { total, next in total.map { $0.union(next) } ?? next }
             ?? object.visualBounds(relativeTo: object, excludeInactive: true)
         let size = simd_max(bounds.extents, SIMD3(repeating: 0.01))
-        let shape = ShapeResource.generateBox(size: size).offsetBy(translation: bounds.center)
+        return ShapeResource.generateBox(size: size).offsetBy(translation: bounds.center)
+    }
+
+    /// Refits the grab box after a character's pose changes its shape.
+    func updateCollisionShape(of object: Entity) {
+        object.components.set(CollisionComponent(shapes: [interactionShape(for: object)]))
+    }
+
+    /// Makes an object grabbable as one piece again (after posing).
+    func restoreInteraction(for object: Entity) {
+        let gravity = object.components[ObjectGravityComponent.self]
+        configureInteraction(for: object)
+        if let gravity { object.components.set(gravity) }
+    }
+
+    /// One collision box around the whole object so the system's manipulation gestures
+    /// (move, rotate, two-handed scale) treat it as a single piece.
+    private func configureInteraction(for object: Entity) {
+        let shape = interactionShape(for: object)
         ManipulationComponent.configureEntity(
             object,
             hoverEffect: .spotlight(.default),

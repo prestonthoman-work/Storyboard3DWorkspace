@@ -150,6 +150,17 @@ private struct SelectedKeyframeShot: View {
                     ShotNotesField(keyframe: keyframe)
                 }
 
+                if appModel.animator.timeline.keyframes.last?.id != keyframe.id {
+                    Picker("Into the next keyframe", selection: Binding(
+                        get: { keyframe.holds },
+                        set: { appModel.setHolds($0, forKeyframe: keyframe.id) })) {
+                        Label("Ease", systemImage: "point.topleft.down.to.point.bottomright.curvepath").tag(false)
+                        Label("Hold, then Cut", systemImage: "square.split.2x1").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .help("Ease moves everything smoothly to the next keyframe. Hold keeps this pose until the next keyframe, for storyboards made of distinct poses.")
+                }
+
                 CaptureControls(shutterTitle: "Take Photo") {
                     appModel.takePhotoForSelectedKeyframe()
                 }

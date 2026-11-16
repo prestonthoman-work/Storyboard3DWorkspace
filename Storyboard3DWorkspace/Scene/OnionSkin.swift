@@ -9,10 +9,12 @@ import RealityKit
 /// (a name change means new geometry, such as a recolor).
 struct OnionSkinKey: Equatable {
     var poses: [ObjectID: Transform]
+    var characterPoses: [ObjectID: CharacterPose] = [:]
     var names: [ObjectID: String]
 
     static func == (a: Self, b: Self) -> Bool {
         a.names == b.names && KeyframeTimeline.posesMatch(a.poses, b.poses)
+            && CharacterPose.matches(a.characterPoses, b.characterPoses)
     }
 }
 
@@ -21,12 +23,13 @@ extension WorkspaceScene {
 
     /// Shows faint copies of objects at `poses`, the way animators see the previous drawing
     /// under the current one. Nil or empty clears them.
-    func setOnionSkin(_ poses: [ObjectID: Transform]?) {
+    func setOnionSkin(_ poses: [ObjectID: Transform]?, characterPoses: [ObjectID: CharacterPose] = [:]) {
         let poses = poses ?? [:]
+        let characterPoses = characterPoses.filter { poses[$0.key] != nil }
         let names = Dictionary(uniqueKeysWithValues: poses.keys.compactMap { id in
             object(withID: id).map { (id, $0.name) }
         })
-        let key = OnionSkinKey(poses: poses, names: names)
+        let key = OnionSkinKey(poses: poses, characterPoses: characterPoses, names: names)
         guard key != onionSkinKey else { return }
         onionSkinKey = key
 
@@ -38,6 +41,9 @@ extension WorkspaceScene {
             for child in object.children where child.name != Self.selectionIndicatorName {
                 let copy = child.clone(recursive: true)
                 Self.stripForGhost(copy)
+                CharacterBuilder.stripEditorOnly(from: copy)
+                // A character's ghost shows its body pose from that keyframe too.
+                if let characterPose = characterPoses[id] { CharacterBuilder.apply(characterPose, to: copy) }
                 ghost.addChild(copy)
             }
             ghost.components.set(OpacityComponent(opacity: Self.onionSkinOpacity))

@@ -68,7 +68,8 @@ struct ImmersiveView: View {
         } update: { _, attachments in
             appModel.workspace.setViewfinderVisible(appModel.isViewfinderVisible)
             updateLabels(attachments)
-            appModel.workspace.setOnionSkin(appModel.onionSkinPoses)
+            appModel.workspace.setOnionSkin(appModel.onionSkinPoses, characterPoses: appModel.onionSkinCharacterPoses)
+            appModel.workspace.setPoseOverlay(appModel.poseOverlay)
             if let framing = attachments.entity(for: Self.framingAttachmentID) {
                 let half = WorkspaceScene.viewfinderHalfSize(for: appModel.captureLens)
                 framing.position = [0, -half.y - 0.014, -WorkspaceScene.viewfinderDistance]
@@ -107,10 +108,19 @@ struct ImmersiveView: View {
                 }
                 .onEnded { _ in appModel.endHandleDrag() }
         )
+        // A posed character's hand or foot target: drag it and the limb bends to reach.
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .targetedToEntity(where: .has(IKHandleComponent.self))
+                .onChanged { value in
+                    appModel.dragReachTarget(to: value.convert(value.location3D, from: .local, to: .scene))
+                }
+                .onEnded { _ in appModel.endReachDrag() }
+        )
         .gesture(
             SpatialTapGesture()
                 .targetedToAnyEntity()
-                .onEnded { value in appModel.selectObject(containing: value.entity) }
+                .onEnded { value in appModel.handleTap(on: value.entity) }
         )
         .task {
             await appModel.workspaceDidOpen()

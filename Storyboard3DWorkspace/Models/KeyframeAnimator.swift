@@ -67,16 +67,17 @@ final class KeyframeAnimator {
     func addKeyframe() -> Keyframe {
         pause()
         let poses = scene.currentPoses()
+        let characters = scene.currentCharacterPoses()
         let keyframe: Keyframe
-        if let selected = selectedKeyframeID, let inserted = timeline.insert(poses, after: selected) {
+        if let selected = selectedKeyframeID, let inserted = timeline.insert(poses, characters: characters, after: selected) {
             keyframe = inserted
-        } else if let inserted = timeline.insert(poses, at: playhead) {
+        } else if let inserted = timeline.insert(poses, characters: characters, at: playhead) {
             keyframe = inserted
         } else if let previous = timeline.keyframes.last(where: { $0.time <= playhead }),
-                  let inserted = timeline.insert(poses, after: previous.id) {
+                  let inserted = timeline.insert(poses, characters: characters, after: previous.id) {
             keyframe = inserted
         } else {
-            keyframe = timeline.append(poses)
+            keyframe = timeline.append(poses, characters: characters)
         }
         selectedKeyframeID = keyframe.id
         playhead = keyframe.time
@@ -91,17 +92,21 @@ final class KeyframeAnimator {
     func saveSceneToSelectedKeyframe() -> Keyframe.ID? {
         guard !isPlaying else { return nil }
         let poses = scene.currentPoses()
+        let characters = scene.currentCharacterPoses()
         guard let keyframe = selectedKeyframe else {
             // What the timeline shows here, plus objects that aren't animated at all.
             let keyframed = timeline.keyframedObjectIDs
             let expected = timeline.poses(at: playhead).merging(poses.filter { !keyframed.contains($0.key) }) { a, _ in a }
-            guard !KeyframeTimeline.posesMatch(expected, poses),
-                  let inserted = timeline.insert(poses, at: playhead) else { return nil }
+            let expectedCharacters = timeline.characterPoses(at: playhead)
+                .merging(characters.filter { !keyframed.contains($0.key) }) { a, _ in a }
+            guard !KeyframeTimeline.posesMatch(expected, poses) || !CharacterPose.matches(expectedCharacters, characters),
+                  let inserted = timeline.insert(poses, characters: characters, at: playhead) else { return nil }
             selectedKeyframeID = inserted.id
             return inserted.id
         }
-        guard !KeyframeTimeline.posesMatch(keyframe.poses, poses) else { return nil }
-        timeline.update(keyframe.id, with: poses)
+        guard !KeyframeTimeline.posesMatch(keyframe.poses, poses)
+                || !CharacterPose.matches(keyframe.characterPoses, characters) else { return nil }
+        timeline.update(keyframe.id, with: poses, characters: characters)
         return keyframe.id
     }
 
@@ -111,6 +116,11 @@ final class KeyframeAnimator {
 
     func setShotType(_ shotType: ShotType?, for id: Keyframe.ID) {
         timeline.setShotType(shotType, for: id)
+    }
+
+    func setHolds(_ holds: Bool, for id: Keyframe.ID) {
+        timeline.setHolds(holds, for: id)
+        applyPlayhead()
     }
 
     /// A deleted object leaves every keyframe.
@@ -248,7 +258,8 @@ final class KeyframeAnimator {
     }
 
     private func applyPlayhead() {
-        scene.apply(timeline.poses(at: playhead), keyframedObjects: timeline.keyframedObjectIDs)
+        scene.apply(timeline.poses(at: playhead), characterPoses: timeline.characterPoses(at: playhead),
+                    keyframedObjects: timeline.keyframedObjectIDs)
     }
 }
 

@@ -161,7 +161,8 @@ final class ExportController {
                 try Task.checkCancellation()
                 let time = min(Double(index) / Double(fps), timeline.duration)
                 guard let frame = input.cameraPath.frame(at: time) else { continue }
-                let snapshot = workspace.snapshot(at: timeline.poses(at: time), keyframedObjects: keyframed)
+                let snapshot = workspace.snapshot(at: timeline.poses(at: time), characterPoses: timeline.characterPoses(at: time),
+                                                  keyframedObjects: keyframed)
                 let image = try await sequence.render(snapshot: snapshot, frame: frame)
                 try await writer?.append(image)
                 lastImage = image

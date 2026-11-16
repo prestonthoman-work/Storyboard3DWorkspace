@@ -26,18 +26,20 @@ enum ModelRecipe: Codable, Equatable {
     case sampleObject(kind: String, color: String?)
     case placeholder(color: String?)
     case baseTemplate(String)
+    /// A built-in poseable character.
+    case character(kind: String, color: String?, proportions: CharacterProportions)
 
     /// The color name, for recipes that can be recolored.
     var colorName: String? {
         switch self {
-        case .sampleObject(_, let color), .placeholder(let color): color
+        case .sampleObject(_, let color), .placeholder(let color), .character(_, let color, _): color
         case .baseTemplate: nil
         }
     }
 
     var canRecolor: Bool {
         switch self {
-        case .sampleObject, .placeholder: true
+        case .sampleObject, .placeholder, .character: true
         case .baseTemplate: false
         }
     }
@@ -47,8 +49,18 @@ enum ModelRecipe: Codable, Equatable {
         switch self {
         case .sampleObject(let kind, _): .sampleObject(kind: kind, color: color)
         case .placeholder: .placeholder(color: color)
+        case .character(let kind, _, let proportions): .character(kind: kind, color: color, proportions: proportions)
         case .baseTemplate: self
         }
+    }
+
+    /// The built-in character this describes, if it is one.
+    var characterKind: CharacterKind? {
+        if case .character(let kind, _, _) = self { CharacterKind(rawValue: kind) } else { nil }
+    }
+
+    var characterProportions: CharacterProportions? {
+        if case .character(_, _, let proportions) = self { proportions } else { nil }
     }
 }
 

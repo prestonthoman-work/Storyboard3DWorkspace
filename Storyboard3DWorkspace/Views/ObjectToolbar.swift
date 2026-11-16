@@ -24,10 +24,24 @@ struct ObjectToolbar: View {
                         .lineLimit(1)
                         .padding(.horizontal, 10)
 
+                    if appModel.isSelectedObjectCharacter {
+                        let isPosing = appModel.characterEditMode == .pose
+                        Button(isPosing ? "Done Posing" : "Pose", systemImage: isPosing ? "checkmark" : "figure.walk.motion") {
+                            withAnimation(.snappy) { appModel.setCharacterEditMode(isPosing ? .move : .pose) }
+                        }
+                        .help(isPosing ? "Back to moving the whole character" : "Pose this character's body")
+                        if isPosing, let joint = appModel.selectedJoint {
+                            Text(joint.displayName)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .padding(.horizontal, 6)
+                        }
+                    }
                     Button("Duplicate", systemImage: "plus.square.on.square") {
                         appModel.duplicateSelectedObject()
                     }
-                    if appModel.canRecolorSelectedObject {
+                    if appModel.canRecolorSelectedObject && appModel.characterEditMode == .move {
                         Button("Color", systemImage: "paintpalette") {
                             withAnimation(.snappy) { isShowingColors.toggle() }
                         }
