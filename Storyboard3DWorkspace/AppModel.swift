@@ -77,6 +77,17 @@ class AppModel {
     /// What went wrong with the last project-list action (create, open, rename, and so on).
     private(set) var projectError: String?
 
+    /// Something worth knowing about the open project, such as photos that couldn't be found.
+    private(set) var projectNotice: String?
+
+    func dismissProjectNotice() {
+        projectNotice = nil
+    }
+
+    /// Photos the open project lists whose image files couldn't be read when it was opened.
+    /// They aren't shown, but each save keeps them in the project file instead of erasing them.
+    @ObservationIgnored private var missingPhotos: [ProjectState.Photo] = []
+
     var projectName: String { currentProject?.name ?? "Storyboard" }
 
     func refreshProjects() {
@@ -228,6 +239,13 @@ class AppModel {
 
         var restoredBackdrop: BackdropImage?
         if let loaded {
+            missingPhotos = loaded.missingPhotos
+            if !missingPhotos.isEmpty {
+                let count = missingPhotos.count
+                projectNotice = count == 1
+                    ? "1 photo in this project couldn't be found, so it isn't shown."
+                    : "\(count) photos in this project couldn't be found, so they aren't shown."
+            }
             isRestoring = true
             photos.load(loaded.photos, primaries: loaded.saved.state.primaryPhotoIDs)
             captureLens = loaded.saved.captureLens
@@ -260,6 +278,8 @@ class AppModel {
         objectNote = nil
         baseNote = nil
         backdropFileID = nil
+        missingPhotos = []
+        projectNotice = nil
         isRestoring = true
         captureLens = .standard
         captureLighting = .studio
@@ -1401,7 +1421,9 @@ class AppModel {
         let backdrop = background.map {
             ProjectStore.SavedProject.Backdrop(name: $0.name, source: $0.source, fileID: backdropFileID)
         }
-        let project = ProjectStore.SavedProject(state: currentState(), captureLens: captureLens,
+        var state = currentState()
+        state.photos += missingPhotos
+        let project = ProjectStore.SavedProject(state: state, captureLens: captureLens,
                                                 captureLighting: captureLighting, captureLook: captureLook,
                                                 backdrop: backdrop)
         do {

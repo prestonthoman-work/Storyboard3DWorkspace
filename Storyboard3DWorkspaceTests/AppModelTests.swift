@@ -450,6 +450,39 @@ struct AppModelTests {
         #expect(try Data(contentsOf: file) == garbage)
     }
 
+    @Test func photosWithMissingFilesAreReportedAndNotErased() async throws {
+        let app = try await makeApp()
+        app.addKeyframe()
+        let keyframe = try #require(app.animator.selectedKeyframeID)
+        let kept = try #require(app.photos.add(solidImage(), lens: .normal, keyframe: keyframe))
+        let lost = try #require(app.photos.add(solidImage(), lens: .normal, keyframe: keyframe))
+        app.saveNow()
+        let project = try #require(app.currentProject)
+
+        // The photo's image goes missing (an interrupted copy, say) while the app isn't running.
+        let photos = projectFolder(project).appending(path: "photos")
+        let image = photos.appending(path: "\(lost.id.uuidString).jpg")
+        let aside = storage.appending(path: "aside.jpg")
+        try FileManager.default.moveItem(at: image, to: aside)
+
+        let reopened = AppModel()
+        #expect(await reopened.openProject(try #require(reopened.projects.first { $0.id == project.id })))
+        #expect(reopened.photos.photos.map(\.id) == [kept.id])
+        #expect(reopened.projectNotice != nil)
+
+        // Editing and saving keeps the missing photo in the project file, and its thumbnail on disk.
+        reopened.addKeyframe()
+        #expect(reopened.saveNow())
+        #expect(FileManager.default.fileExists(atPath: photos.appending(path: "\(lost.id.uuidString)-thumb.jpg").path(percentEncoded: false)))
+
+        // When the file comes back, so does the photo.
+        try FileManager.default.moveItem(at: aside, to: image)
+        let restored = AppModel()
+        #expect(await restored.openProject(try #require(restored.projects.first { $0.id == project.id })))
+        #expect(Set(restored.photos.photos.map(\.id)) == [kept.id, lost.id])
+        #expect(restored.projectNotice == nil)
+    }
+
     @Test func aFailedRenameIsReported() async throws {
         let app = try await makeApp()
         let project = try #require(app.currentProject)

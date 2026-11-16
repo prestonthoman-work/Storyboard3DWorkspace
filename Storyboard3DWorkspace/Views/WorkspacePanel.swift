@@ -138,6 +138,16 @@ private struct PanelPage<Content: View>: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: UI.sectionSpacing) {
                 SaveErrorBanner()
+                if let notice = appModel.projectNotice {
+                    HStack(spacing: 12) {
+                        StatusMessage(notice, kind: .warning)
+                        Button("Dismiss", systemImage: "xmark") { appModel.dismissProjectNotice() }
+                            .labelStyle(.iconOnly)
+                            .buttonBorderShape(.circle)
+                            .controlSize(.small)
+                            .help("Dismiss")
+                    }
+                }
                 if !appModel.isGuideHidden {
                     NextStepCard()
                         .transition(.move(edge: .top).combined(with: .opacity))

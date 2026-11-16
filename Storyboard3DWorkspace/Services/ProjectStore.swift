@@ -44,6 +44,9 @@ enum ProjectStore {
     struct LoadedProject {
         var saved: SavedProject
         var photos: [CapturedPhoto]
+        /// Photos listed in the project whose image files couldn't be read. They can't be
+        /// shown, but callers should keep them in the saved file so they aren't erased.
+        var missingPhotos: [ProjectState.Photo] = []
         var backdropImage: CGImage?
     }
 
@@ -144,7 +147,13 @@ enum ProjectStore {
         let id = info.id
         try files.createDirectory(at: photosFolder(id), withIntermediateDirectories: true)
 
+        // Keep the files of every photo the project lists, including ones that couldn't be
+        // read when it was opened, in case they come back.
         var keep = Set<String>()
+        for entry in project.state.photos {
+            keep.formUnion([photoFile(id, entry.id).lastPathComponent,
+                            photoFile(id, entry.id, thumbnail: true).lastPathComponent])
+        }
         for photo in photos {
             let full = photoFile(id, photo.id)
             let thumbnail = photoFile(id, photo.id, thumbnail: true)
@@ -188,12 +197,16 @@ enum ProjectStore {
         guard FileManager.default.fileExists(atPath: file.path(percentEncoded: false)) else { return nil }
         let saved = try JSONDecoder().decode(SavedProject.self, from: Data(contentsOf: file))
 
-        // Photos whose image files are missing are dropped rather than shown blank.
+        // Photos whose image files are missing aren't shown blank; they're reported instead.
+        var missing: [ProjectState.Photo] = []
         let photos: [CapturedPhoto] = saved.state.photos.compactMap { entry in
-            guard let jpeg = try? Data(contentsOf: photoFile(project, entry.id)) else { return nil }
-            let thumbnail = (try? Data(contentsOf: photoFile(project, entry.id, thumbnail: true))).flatMap(UIImage.init(data:))
-                ?? UIImage(data: jpeg)
-            guard let thumbnail else { return nil }
+            guard let jpeg = try? Data(contentsOf: photoFile(project, entry.id)),
+                  let thumbnail = (try? Data(contentsOf: photoFile(project, entry.id, thumbnail: true))).flatMap(UIImage.init(data:))
+                    ?? UIImage(data: jpeg)
+            else {
+                missing.append(entry)
+                return nil
+            }
             return CapturedPhoto(id: entry.id, takenAt: entry.takenAt, lens: entry.lens,
                                  jpegData: jpeg, thumbnail: thumbnail, assignment: entry.assignment,
                                  camera: entry.camera, lighting: entry.lighting ?? .studio,
@@ -204,6 +217,6 @@ enum ProjectStore {
             .flatMap { try? Data(contentsOf: backdropFile(project, $0)) }
             .flatMap { UIImage(data: $0)?.cgImage }
 
-        return LoadedProject(saved: saved, photos: photos, backdropImage: backdropImage)
+        return LoadedProject(saved: saved, photos: photos, missingPhotos: missing, backdropImage: backdropImage)
     }
 }
