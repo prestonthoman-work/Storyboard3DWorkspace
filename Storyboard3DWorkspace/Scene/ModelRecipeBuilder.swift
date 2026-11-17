@@ -21,6 +21,8 @@ extension ModelRecipe {
             return CharacterKind(rawValue: kind).map { prefix + $0.name }
         case .importedModel(_, let name):
             return name
+        case .generatedObject(let name, _, _):
+            return prefix + name
         }
     }
 
@@ -47,6 +49,9 @@ extension ModelRecipe {
             // A gray box stands in for a model whose file couldn't be loaded, so the object
             // (and its place in every keyframe) isn't lost.
             return ImportedModels.instance(of: fileID) ?? SampleObjectCatalog.makePlaceholder(tint: nil)
+        case .generatedObject(let name, let parts, let color):
+            guard !parts.isEmpty else { return nil }
+            return GeneratedObjectBuilder.make(name: name, parts: parts, tint: SampleObjectCatalog.color(named: color))
         }
     }
 }

@@ -13,9 +13,37 @@ struct SampleModelGenerationService: ModelGenerationService {
 
     func generateObject(prompt: String) async throws -> GeneratedModel {
         let match = SampleObjectCatalog.match(prompt)
+        if let character = characterModel(for: prompt, match: match) { return character }
+        if let object = catalogModel(for: match) { return object }
         let colorPrefix = match.colorName.map { "\($0.capitalized) " } ?? ""
+        return GeneratedModel(
+            displayName: "\(colorPrefix)Placeholder",
+            source: .sample,
+            recipe: .placeholder(color: match.colorName),
+            entity: SampleObjectCatalog.makePlaceholder(tint: match.color),
+            note: "No sample object matches that prompt, so a placeholder block was placed."
+        )
+    }
 
-        // People get a built-in poseable character, when they're named before any object.
+    /// A built-in character, when the prompt names a person, or a built-in object, when the
+    /// prompt only names it ("a red house", "tree"). Nil when the prompt asks for more.
+    func builtInModel(for prompt: String) -> GeneratedModel? {
+        let match = SampleObjectCatalog.match(prompt)
+        if let character = characterModel(for: prompt, match: match) { return character }
+        guard let kind = match.kind else { return nil }
+        let allowed = Set(["a", "an", "the", "one", "some", "small", "little", "big", "large", "simple", "basic"]
+                          + SampleObjectCatalog.colorNames + ["grey", kind.rawValue]
+                          + SampleObjectCatalog.words(in: kind.name))
+        let words = SampleObjectCatalog.words(in: prompt)
+        let onlyNamesIt = words.allSatisfy { word in
+            allowed.contains(word) || allowed.contains { word == $0 + "s" || word == $0 + "es" }
+        }
+        return onlyNamesIt ? catalogModel(for: match) : nil
+    }
+
+    /// People get a built-in poseable character, when they're named before any object.
+    private func characterModel(for prompt: String, match: SampleObjectCatalog.Match) -> GeneratedModel? {
+        let colorPrefix = match.colorName.map { "\($0.capitalized) " } ?? ""
         let words = SampleObjectCatalog.words(in: prompt)
         let objectPosition = match.keyword.flatMap { SampleObjectCatalog.position(of: $0, in: words) } ?? .max
         var person: (kind: CharacterKind, keyword: String, position: Int)?
@@ -27,32 +55,25 @@ struct SampleModelGenerationService: ModelGenerationService {
                 }
             }
         }
-        if let person {
-            return GeneratedModel(
-                displayName: colorPrefix + person.kind.name,
-                source: .sample,
-                recipe: .character(kind: person.kind.rawValue, color: match.colorName, proportions: person.kind.proportions),
-                entity: CharacterBuilder.make(person.kind, proportions: person.kind.proportions, tint: match.color),
-                note: "Sample: matched “\(person.keyword)” to the built-in \(person.kind.name.lowercased()). Switch to Pose to set its pose."
-            )
-        }
+        guard let person else { return nil }
+        return GeneratedModel(
+            displayName: colorPrefix + person.kind.name,
+            source: .sample,
+            recipe: .character(kind: person.kind.rawValue, color: match.colorName, proportions: person.kind.proportions),
+            entity: CharacterBuilder.make(person.kind, proportions: person.kind.proportions, tint: match.color),
+            note: "Matched “\(person.keyword)” to the built-in \(person.kind.name.lowercased()). Switch to Pose to set its pose."
+        )
+    }
 
-        guard let kind = match.kind, let keyword = match.keyword else {
-            return GeneratedModel(
-                displayName: "\(colorPrefix)Placeholder",
-                source: .sample,
-                recipe: .placeholder(color: match.colorName),
-                entity: SampleObjectCatalog.makePlaceholder(tint: match.color),
-                note: "No sample object matches that prompt, so a placeholder block was placed."
-            )
-        }
-
+    private func catalogModel(for match: SampleObjectCatalog.Match) -> GeneratedModel? {
+        guard let kind = match.kind, let keyword = match.keyword else { return nil }
+        let colorPrefix = match.colorName.map { "\($0.capitalized) " } ?? ""
         return GeneratedModel(
             displayName: colorPrefix + kind.name,
             source: .sample,
             recipe: .sampleObject(kind: kind.rawValue, color: match.colorName),
             entity: SampleObjectCatalog.make(kind, tint: match.color),
-            note: "Sample: matched “\(keyword)” to the built-in \(kind.name.lowercased())."
+            note: "Matched “\(keyword)” to the built-in \(kind.name.lowercased())."
         )
     }
 

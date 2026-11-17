@@ -18,13 +18,16 @@ struct ObjectsPanel: View {
                     PanelSection("Add", symbol: "plus.square.on.square") {
                         if appModel.isSampleMode {
                             Badge(text: "Sample objects", symbol: "shippingbox")
-                                .help("No AI service is set up, so prompts are matched to built-in objects.")
+                                .help("No Claude API key is set up, so prompts are matched to built-in objects.")
+                        } else {
+                            Badge(text: "Claude", symbol: "sparkles")
+                                .help("Prompts are turned into objects by Claude.")
                         }
                     } content: {
                         CatalogTray()
                         CharacterTray()
                         ModelImportButton()
-                        PromptField(placeholder: "Or describe one, like a red house",
+                        PromptField(placeholder: appModel.isSampleMode ? "Or describe one, like a red house" : "Or describe one, like a park bench",
                                     text: $appModel.objectPrompt,
                                     isWorking: appModel.isGeneratingObject,
                                     canSubmit: appModel.canGenerateObject) {
@@ -35,6 +38,7 @@ struct ObjectsPanel: View {
                         } else if let note = appModel.objectNote {
                             StatusMessage(note)
                         }
+                        ClaudeKeyButton()
                     }
 
                     PanelSection("In Scene", symbol: "cube") {
@@ -334,6 +338,60 @@ private struct ModelImportButton: View {
             if case .success(let url) = result {
                 Task { await appModel.importModel(from: url) }
             }
+        }
+    }
+}
+
+/// Adds, replaces or removes the Claude API key used to generate objects from prompts.
+private struct ClaudeKeyButton: View {
+    @Environment(AppModel.self) private var appModel
+    @State private var isEditing = false
+    @State private var key = ""
+    @State private var saveFailed = false
+
+    var body: some View {
+        Button {
+            key = ""
+            saveFailed = false
+            isEditing = true
+        } label: {
+            Label(appModel.isSampleMode ? "Connect Claude to Generate Objects" : "Claude API Key",
+                  systemImage: "key")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(appModel.isSampleMode ? .regular : .small)
+        .sheet(isPresented: $isEditing) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Claude API Key").font(.title2.bold())
+                Text("With an Anthropic API key, prompts like “a park bench” are designed by Claude from simple shapes. Each object is a separate request billed to your Anthropic account. The key is stored in this device's Keychain.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                SecureField("sk-ant-…", text: $key)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                if saveFailed {
+                    StatusMessage("The key couldn't be saved to the Keychain.", kind: .error)
+                }
+                HStack {
+                    if appModel.hasSavedClaudeKey {
+                        Button("Remove Key", role: .destructive) {
+                            appModel.removeClaudeKey()
+                            isEditing = false
+                        }
+                    }
+                    Spacer()
+                    Button("Cancel") { isEditing = false }
+                    Button("Save") {
+                        if appModel.saveClaudeKey(key) { isEditing = false } else { saveFailed = true }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding(32)
+            .frame(width: 520)
         }
     }
 }

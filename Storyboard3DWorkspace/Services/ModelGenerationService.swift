@@ -35,11 +35,15 @@ enum ModelRecipe: Codable, Equatable {
     /// A USDZ file the person imported, stored in the project under `fileID`. `name` is the
     /// file's name, for naming the object.
     case importedModel(fileID: UUID, name: String)
+    /// An object a generation service designed from simple shapes, already fitted to the set.
+    /// `color` repaints its main-body parts (nil for the colors it was generated with).
+    case generatedObject(name: String, parts: [GeneratedPart], color: String?)
 
     /// The color name, for recipes that can be recolored.
     var colorName: String? {
         switch self {
-        case .sampleObject(_, let color), .placeholder(let color), .character(_, let color, _): color
+        case .sampleObject(_, let color), .placeholder(let color), .character(_, let color, _),
+             .generatedObject(_, _, let color): color
         case .baseTemplate, .importedModel: nil
         }
     }
@@ -47,6 +51,7 @@ enum ModelRecipe: Codable, Equatable {
     var canRecolor: Bool {
         switch self {
         case .sampleObject, .placeholder, .character: true
+        case .generatedObject(_, let parts, _): parts.contains(where: \.isMainBody)
         case .baseTemplate, .importedModel: false
         }
     }
@@ -57,6 +62,7 @@ enum ModelRecipe: Codable, Equatable {
         case .sampleObject(let kind, _): .sampleObject(kind: kind, color: color)
         case .placeholder: .placeholder(color: color)
         case .character(let kind, _, let proportions): .character(kind: kind, color: color, proportions: proportions)
+        case .generatedObject(let name, let parts, _): .generatedObject(name: name, parts: parts, color: color)
         case .baseTemplate, .importedModel: self
         }
     }
@@ -96,10 +102,15 @@ protocol ModelGenerationService {
 }
 
 enum ModelGenerationServiceProvider {
-    /// This project has no AI model-generation backend configured, so the app runs in
-    /// sample mode. To connect a real service, return a type that conforms to
+    /// Objects are generated with Claude when an API key has been added, falling back to
+    /// sample matching otherwise. To use another service, return a type that conforms to
     /// `ModelGenerationService` here.
     static func makeService() -> any ModelGenerationService {
-        SampleModelGenerationService()
+        // Tests always use sample matching, so they're fast and repeatable whether or not
+        // a Claude API key is set up.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return SampleModelGenerationService()
+        }
+        return ClaudeModelGenerationService()
     }
 }
