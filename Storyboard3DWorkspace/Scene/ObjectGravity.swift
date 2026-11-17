@@ -10,6 +10,9 @@ import simd
 struct ObjectGravityComponent: Component {
     /// True while the person is holding the object.
     var isHeld = false
+    /// True while a character holds the object: it follows the hand instead of falling,
+    /// and nothing rests on it.
+    var isAttached = false
     var fallSpeed: Float = 0
 }
 
@@ -50,7 +53,7 @@ struct ObjectGravitySystem: System {
         let objects = Array(context.entities(matching: Self.query, updatingSystemWhen: .rendering))
 
         for object in objects {
-            guard var gravity = object.components[ObjectGravityComponent.self],
+            guard var gravity = object.components[ObjectGravityComponent.self], !gravity.isAttached,
                   let gap = Self.gapBelow(object, among: objects)
             else { continue }
 
@@ -78,6 +81,7 @@ struct ObjectGravitySystem: System {
     /// Raises `object` if it has been pushed into the surface or an object below it. Used
     /// right after each manipulation update so a held object never visibly dips into them.
     static func keepAboveSurface(_ object: Entity) {
+        guard !(object.components[ObjectGravityComponent.self]?.isAttached ?? false) else { return }
         let siblings = object.parent?.children.filter {
             $0.isEnabled && $0.components.has(ObjectGravityComponent.self)
         } ?? []
@@ -99,7 +103,8 @@ struct ObjectGravitySystem: System {
         // Characters stand on the base or table, not on top of other objects, so a figure
         // posed sitting on a prop keeps its feet on the ground.
         let isCharacter = object.components.has(CharacterPoseComponent.self)
-        for other in objects where !isCharacter && other != object && other.parent == container {
+        for other in objects where !isCharacter && other != object && other.parent == container
+            && !(other.components[ObjectGravityComponent.self]?.isAttached ?? false) {
             guard let otherBounds = geometryBounds(of: other, in: container),
                   footprintsOverlap(bounds, otherBounds),
                   otherBounds.max.y <= bounds.center.y

@@ -217,6 +217,93 @@ final class PoseEditor {
         return true
     }
 
+    // MARK: Looking at things
+
+    /// What each character was last turned to look at, for aiming again after things move.
+    /// Not saved: the pose itself is.
+    private(set) var lookTargets: [ObjectID: ObjectID] = [:]
+
+    /// Turns the character's head (with its neck and chest) to face `point`, a position in
+    /// the room. Returns false if nothing changed.
+    @discardableResult
+    func look(at point: SIMD3<Float>, target: ObjectID, on object: Entity, id: ObjectID) -> Bool {
+        lookTargets[id] = target
+        guard let current = pose(of: object), let layout = workspace.rigLayout(of: object),
+              let target = rigPoint(point, of: object, layout: layout) else { return false }
+        let aimed = HeadAim.aim(current, at: target, layout: layout)
+        guard !aimed.matches(current, tolerance: 0.01) else { return false }
+        return setPose(aimed, on: object)
+    }
+
+    func forgetLookTarget(of id: ObjectID) {
+        lookTargets[id] = nil
+    }
+
+    /// How far (degrees) the character's face points from `point`: how close it came.
+    func lookError(at point: SIMD3<Float>, on object: Entity) -> Float? {
+        guard let current = pose(of: object), let layout = workspace.rigLayout(of: object),
+              let target = rigPoint(point, of: object, layout: layout) else { return nil }
+        return HeadAim.angleOff(current, from: target, layout: layout)
+    }
+
+    /// A point in the room in the rig's own space (human scale, before grounding shifts the body).
+    private func rigPoint(_ point: SIMD3<Float>, of object: Entity, layout: RigLayout) -> SIMD3<Float>? {
+        guard let rig = CharacterBuilder.rig(in: object), let pelvis = CharacterBuilder.joints(in: rig)[.pelvis],
+              let space = pelvis.parent else { return nil }
+        return space.convert(position: point, from: nil) - (pelvis.position - layout.offset(of: .pelvis))
+    }
+
+    // MARK: Sitting
+
+    enum SitResult: Equatable {
+        case seated
+        /// The seat is higher than the legs reach; the feet stay on the ground, so the hips
+        /// end up lower than the seat's top.
+        case seatTooHigh
+    }
+
+    /// Sits the character on top of `seat`, an object in the same container: hips just above
+    /// its top, thighs over it, feet on the ground in front. Keeps the character's facing.
+    func sit(_ object: Entity, on seat: Entity, sittingPose: CharacterPose) -> SitResult? {
+        guard let layout = workspace.rigLayout(of: object), let container = object.parent,
+              let rig = CharacterBuilder.rig(in: object), let pelvis = CharacterBuilder.joints(in: rig)[.pelvis],
+              let space = pelvis.parent,
+              let seatBounds = Self.bounds(of: seat, in: container)
+        else { return nil }
+
+        // Seat height above the ground the character stands on, at human scale.
+        let ground = object.position.y
+        let scale = max(space.scale(relativeTo: container).x, 1e-6)
+        let seatHeight = (seatBounds.max.y - ground) / scale
+        let tooHigh = seatHeight > SeatedLegs.highestSeat(layout: layout)
+        setPose(SeatedLegs.sit(sittingPose, seatHeight: max(seatHeight, 0.15), layout: layout), on: object)
+
+        // Slide over the seat: hips a little behind its middle, so the thighs rest along it.
+        let hips = space.convert(position: pelvis.position, to: container)
+        var forward = space.convert(direction: [0, 0, 1], to: container)
+        forward.y = 0
+        forward = simd_length(forward) > 1e-5 ? simd_normalize(forward) : [0, 0, 1]
+        let wanted = SIMD3(seatBounds.center.x, 0, seatBounds.center.z) - forward * (layout.thigh * 0.35 * scale)
+        object.position.x += wanted.x - hips.x
+        object.position.z += wanted.z - hips.z
+        poseChanged()
+        return tooHigh ? .seatTooHigh : .seated
+    }
+
+    /// An object's geometry bounds in another entity's space.
+    private static func bounds(of entity: Entity, in space: Entity) -> BoundingBox? {
+        guard let local = WorkspaceScene.geometryBounds(of: entity) else { return nil }
+        var result: BoundingBox?
+        for corner in 0..<8 {
+            let point = SIMD3(corner & 1 == 0 ? local.min.x : local.max.x,
+                              corner & 2 == 0 ? local.min.y : local.max.y,
+                              corner & 4 == 0 ? local.min.z : local.max.z)
+            let converted = entity.convert(position: point, to: space)
+            result = result.map { $0.union(converted) } ?? BoundingBox(min: converted, max: converted)
+        }
+        return result
+    }
+
     // MARK: Saved poses
 
     /// Poses saved for reuse, shared by every project.

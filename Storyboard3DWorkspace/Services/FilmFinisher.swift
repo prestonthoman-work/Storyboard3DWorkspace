@@ -8,7 +8,7 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 
 /// Finishes a raw render the way a colorist would: a filmic tone curve, a soft bloom on
-/// highlights, a vignette, fine grain, and letterbox bars for the chosen format.
+/// highlights, a vignette, fine grain, and letterbox or pillarbox bars for the chosen format.
 enum FilmFinisher {
     private static let context = CIContext(options: [.cacheIntermediates: false])
 
@@ -102,13 +102,23 @@ enum FilmFinisher {
 
     // MARK: Letterbox
 
+    /// Black bars above and below for wider formats, or at the sides for narrower ones.
     private static func letterbox(_ input: CIImage, format: FrameFormat, extent: CGRect) -> CIImage {
-        let barHeight = (extent.height * CGFloat(format.matteFraction)).rounded()
-        guard barHeight > 0 else { return input }
         let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0))
-        let bottom = black.cropped(to: CGRect(x: extent.minX, y: extent.minY, width: extent.width, height: barHeight))
-        let top = black.cropped(to: CGRect(x: extent.minX, y: extent.maxY - barHeight, width: extent.width, height: barHeight))
-        return top.composited(over: bottom.composited(over: input))
+        let barHeight = (extent.height * CGFloat(format.matteFraction)).rounded()
+        let barWidth = (extent.width * CGFloat(format.pillarFraction)).rounded()
+        var output = input
+        if barHeight > 0 {
+            let bottom = black.cropped(to: CGRect(x: extent.minX, y: extent.minY, width: extent.width, height: barHeight))
+            let top = black.cropped(to: CGRect(x: extent.minX, y: extent.maxY - barHeight, width: extent.width, height: barHeight))
+            output = top.composited(over: bottom.composited(over: output))
+        }
+        if barWidth > 0 {
+            let left = black.cropped(to: CGRect(x: extent.minX, y: extent.minY, width: barWidth, height: extent.height))
+            let right = black.cropped(to: CGRect(x: extent.maxX - barWidth, y: extent.minY, width: barWidth, height: extent.height))
+            output = left.composited(over: right.composited(over: output))
+        }
+        return output
     }
 }
 

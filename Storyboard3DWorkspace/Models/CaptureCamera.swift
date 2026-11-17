@@ -6,15 +6,39 @@
 import Foundation
 import simd
 
-/// Lens choices for captures, named by full-frame focal length like a Blender camera.
-nonisolated enum CaptureLens: Int, Codable, CaseIterable, Identifiable {
-    case wide = 24
-    case standard = 35
-    case normal = 50
-    case portrait = 85
+/// A capture lens, named by its full-frame focal length like a Blender camera. Any focal
+/// length in `range` can be used; `presets` are the common primes.
+///
+/// Saved as a bare number of millimeters, so projects from when only four lenses existed
+/// (saved as 24, 35, 50, or 85) still read.
+nonisolated struct CaptureLens: Codable, Hashable, Identifiable {
+    /// Full-frame focal length in millimeters.
+    let focalLength: Int
 
-    var id: Int { rawValue }
-    var label: String { "\(rawValue) mm" }
+    static let range: ClosedRange<Int> = 12...200
+
+    init(_ focalLength: Int) {
+        self.focalLength = min(max(focalLength, Self.range.lowerBound), Self.range.upperBound)
+    }
+
+    static let wide = CaptureLens(24)
+    static let standard = CaptureLens(35)
+    static let normal = CaptureLens(50)
+    static let portrait = CaptureLens(85)
+    /// Common primes, from ultra-wide to telephoto.
+    static let presets: [CaptureLens] = [CaptureLens(18), .wide, .standard, .normal, .portrait, CaptureLens(135)]
+
+    var id: Int { focalLength }
+    var label: String { "\(focalLength) mm" }
+
+    init(from decoder: Decoder) throws {
+        self.init(try decoder.singleValueContainer().decode(Int.self))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(focalLength)
+    }
 
     /// Output frame aspect ratio (16:9).
     static let aspect: Float = 16 / 9
@@ -22,7 +46,7 @@ nonisolated enum CaptureLens: Int, Codable, CaseIterable, Identifiable {
     /// Vertical field of view in radians, for a 36 mm-wide sensor cropped to 16:9.
     var verticalFOV: Float {
         let sensorHeight: Float = 36 / Self.aspect
-        return 2 * atan(sensorHeight / 2 / Float(rawValue))
+        return 2 * atan(sensorHeight / 2 / Float(focalLength))
     }
 
     var horizontalFOV: Float {

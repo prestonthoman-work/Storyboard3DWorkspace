@@ -57,6 +57,15 @@ class AppModel {
         return animator.timeline.keyframes[index - 1].characterPoses.filter { ghosts[$0.key] != nil }
     }
 
+    /// Guides showing where each character looks, and the 180° line between two characters.
+    /// Remembered across launches. They never appear in photos.
+    var showsEyelines: Bool = UserDefaults.standard.bool(forKey: "showsEyelines") {
+        didSet {
+            UserDefaults.standard.set(showsEyelines, forKey: "showsEyelines")
+            workspace.setEyelinesVisible(showsEyelines)
+        }
+    }
+
     /// Floating name tags above objects in the room. Remembered across launches.
     var showsObjectLabels: Bool = UserDefaults.standard.bool(forKey: "showsObjectLabels") {
         didSet { UserDefaults.standard.set(showsObjectLabels, forKey: "showsObjectLabels") }
@@ -75,6 +84,7 @@ class AppModel {
         self.animator = KeyframeAnimator(scene: workspace)
         self.tableAnchoring = TableAnchoring(workspace: workspace)
         self.poseEditor = PoseEditor(workspace: workspace)
+        workspace.setEyelinesVisible(showsEyelines)
         workspace.setBase(BaseTemplateBuilder.make(.grass), size: baseMeters)
         refreshProjects()
     }
@@ -668,6 +678,70 @@ class AppModel {
         objectNote = preset.requirement
     }
 
+    /// A note about the last look or sit, such as a target the head couldn't turn far enough
+    /// to face. Cleared by the next one, or by choosing another object.
+    private(set) var poseNote: String?
+
+    // Looking at things
+
+    /// What the selected character was last turned to look at, if it's still in the scene.
+    var selectedLookTarget: ObjectSummary? {
+        guard let id = selectedObjectID, let target = poseEditor.lookTargets[id] else { return nil }
+        return objects.first { $0.id == target }
+    }
+
+    /// Turns the selected character's head, neck, and chest to face another object or
+    /// character (at its eyes). One undo step. The turn is a pose like any other: it doesn't
+    /// follow the target afterwards, so use `reaimSelectedCharacter()` after things move.
+    func lookSelectedCharacter(at targetID: ObjectID) {
+        guard let id = selectedObjectID, targetID != id, let object = selectedCharacterEntity,
+              let target = workspace.object(withID: targetID), let point = lookPoint(of: target) else { return }
+        poseNote = nil
+        beginPoseChange()
+        if poseEditor.look(at: point, target: targetID, on: object, id: id) { exports.invalidate() }
+        endPoseChange()
+        if let off = poseEditor.lookError(at: point, on: object), off > 8 {
+            poseNote = "That's as far as the head can turn. Turn the whole character toward it to look straight at it."
+        }
+    }
+
+    /// Looks again at the last target, after either of them has moved.
+    func reaimSelectedCharacter() {
+        guard let target = selectedLookTarget else { return }
+        lookSelectedCharacter(at: target.id)
+    }
+
+    /// Where to look on an object: a character's eyes, or the middle of anything else.
+    private func lookPoint(of target: Entity) -> SIMD3<Float>? {
+        if let rig = CharacterBuilder.rig(in: target), let head = CharacterBuilder.joints(in: rig)[.head],
+           let proportions = rig.components[CharacterRigComponent.self]?.proportions {
+            return head.convert(position: HeadAim.eyeOffset(layout: RigLayout(proportions: proportions)), to: nil)
+        }
+        return WorkspaceScene.geometryBounds(of: target).map { target.convert(position: $0.center, to: nil) }
+    }
+
+    // Sitting
+
+    /// What the selected character can sit on: any object that isn't a character or held.
+    var seats: [ObjectSummary] {
+        objects.filter { $0.recipe.characterKind == nil && holds[$0.id] == nil && $0.id != selectedObjectID }
+    }
+
+    /// Sits the selected character on an object: sitting pose, legs bent to the seat's
+    /// height, moved so its hips are on top. One undo step.
+    func sitSelectedCharacter(on seatID: ObjectID) {
+        guard let object = selectedCharacterEntity, let seat = workspace.object(withID: seatID) else { return }
+        poseNote = nil
+        beginPoseChange()
+        let result = poseEditor.sit(object, on: seat, sittingPose: PosePreset.sitting.pose)
+        if result != nil { exports.invalidate() }
+        endPoseChange()
+        objectNote = nil
+        if result == .seatTooHigh {
+            poseNote = "That seat is higher than this character's legs reach, so it sits lower with its feet on the ground. Make the seat smaller or the character taller."
+        }
+    }
+
     /// Saves the selected character's pose for reuse in any project. A pose with the same
     /// name is replaced.
     func saveCurrentPose(named name: String) {
@@ -829,6 +903,7 @@ class AppModel {
         let name = uniqueObjectName(summary.name)
         let copy = workspace.duplicate(object, id: id)
         copy.name = name
+        applyHold(to: copy, id: id)
         SceneFeedback.appear(copy)
         objects.append(ObjectSummary(id: id, name: name, source: summary.source, recipe: summary.recipe))
         selectObject(id)
@@ -842,6 +917,12 @@ class AppModel {
         checkpoint()
         workspace.remove(object, animated: true)
         objects.removeAll { $0.id == id }
+        // Whatever this character was holding drops, and so does this object if it was held.
+        for (prop, hold) in holds where prop == id || hold.character == id {
+            holds[prop] = nil
+            if let entity = workspace.object(withID: prop) { applyHold(to: entity, id: prop) }
+        }
+        poseEditor.forgetLookTarget(of: id)
         selectObject(nil)
         // The object leaves every keyframe it was in, so those keyframes have changed.
         keyframesChanged(animator.removeObject(id))
@@ -918,6 +999,7 @@ class AppModel {
         if id != selectedObjectID {
             endPoseDrag()
             poseEditor.selectJoint(nil)
+            poseNote = nil
         }
         selectedObjectID = id
         workspace.showSelection(on: id.flatMap { workspace.object(withID: $0) })
@@ -966,6 +1048,71 @@ class AppModel {
         animator.pause()
         checkpoint()
         selectObject(containing: entity)
+    }
+
+    /// The user let go of an object. A held object keeps its new place in the hand.
+    func manipulationEnded(on entity: Entity) {
+        guard let object = workspace.object(containing: entity), let id = workspace.objectID(of: object),
+              var hold = holds[id], let wrist = HeldProps.wrist(for: hold, near: object) else { return }
+        hold.offset = CodableTransform(HeldProps.offset(of: object, from: wrist))
+        holds[id] = hold
+        applyHold(to: object, id: id)
+    }
+
+    // Held objects
+
+    /// Objects characters are holding, by object.
+    private(set) var holds: [ObjectID: Hold] = [:]
+
+    /// "Mannequin's right hand", for the selected object's row.
+    func holderDescription(of id: ObjectID) -> String? {
+        guard let hold = holds[id], let character = objects.first(where: { $0.id == hold.character }) else { return nil }
+        return "\(character.name)'s \(hold.hand.name.lowercased())"
+    }
+
+    /// Puts the selected object in a character's hand. It follows the hand through every
+    /// pose and keyframe until it's let go.
+    func putSelectedObject(in hand: Hand, of characterID: ObjectID) {
+        guard let summary = selectedObject, summary.recipe.characterKind == nil, summary.id != characterID,
+              let prop = workspace.object(withID: summary.id), let character = workspace.object(withID: characterID),
+              let rig = CharacterBuilder.rig(in: character), let wrist = CharacterBuilder.joints(in: rig)[hand.wrist]
+        else { return }
+        animator.pause()
+        checkpoint()
+        let offset = HeldProps.grip(prop, in: wrist)
+        holds[summary.id] = Hold(character: characterID, hand: hand, offset: CodableTransform(offset))
+        applyHold(to: prop, id: summary.id)
+        exports.invalidate()
+        documentChanged()
+        sceneEdited()
+    }
+
+    /// The selected object leaves the hand holding it and drops to whatever is below.
+    func letGoOfSelectedObject() {
+        guard let id = selectedObjectID, holds[id] != nil, let prop = workspace.object(withID: id) else { return }
+        animator.pause()
+        checkpoint()
+        holds[id] = nil
+        applyHold(to: prop, id: id)
+        exports.invalidate()
+        documentChanged()
+        sceneEdited()
+    }
+
+    /// Makes the entity match `holds`: in the hand and out of gravity's way, or free.
+    private func applyHold(to entity: Entity, id: ObjectID) {
+        var gravity = entity.components[ObjectGravityComponent.self] ?? ObjectGravityComponent()
+        gravity.fallSpeed = 0
+        if let hold = holds[id] {
+            entity.components.set(HeldPropComponent(hold: hold))
+            gravity.isAttached = true
+            entity.components.set(gravity)
+            HeldProps.attach(entity)
+        } else {
+            entity.components.remove(HeldPropComponent.self)
+            gravity.isAttached = false
+            entity.components.set(gravity)
+        }
     }
 
     // MARK: Background
@@ -1643,7 +1790,8 @@ class AppModel {
             guard let entity = workspace.object(withID: summary.id) else { return nil }
             return ProjectState.Object(id: summary.id, name: summary.name, source: summary.source,
                                        recipe: summary.recipe, transform: CodableTransform(entity.transform),
-                                       isVisible: entity.isEnabled, characterPose: workspace.characterPose(of: entity))
+                                       isVisible: entity.isEnabled, characterPose: workspace.characterPose(of: entity),
+                                       hold: holds[summary.id])
         }
         let generatedBy: ModelSource? = if case .generated(let source) = base.origin { source } else { nil }
 
@@ -1713,6 +1861,10 @@ class AppModel {
             summaries.append(ObjectSummary(id: object.id, name: object.name, source: object.source, recipe: object.recipe))
         }
         objects = summaries
+        holds = Dictionary(uniqueKeysWithValues: state.objects.compactMap { object in object.hold.map { (object.id, $0) } })
+        for summary in summaries {
+            if let entity = workspace.object(withID: summary.id) { applyHold(to: entity, id: summary.id) }
+        }
         let stillSelected = selectedObjectID.flatMap { workspace.object(withID: $0) } != nil
         selectObject(stillSelected ? selectedObjectID : nil)
 

@@ -47,6 +47,8 @@ final class WorkspaceScene {
     let handles = SelectionHandles()
     /// Floating name tags. Outside the base, so they're never in a capture.
     let labelsRoot = Entity()
+    /// Eyeline guides for characters. Outside the staged scene, so they never appear in photos.
+    let eyelinesRoot = Entity()
     /// Translucent ghosts of the previous keyframe. Inside the objects container so they
     /// share its space, but stripped from every capture.
     let onionRoot = Entity()
@@ -113,6 +115,9 @@ final class WorkspaceScene {
         root.addChild(handles.root)
         labelsRoot.name = "ObjectLabels"
         root.addChild(labelsRoot)
+        eyelinesRoot.name = "Eyelines"
+        eyelinesRoot.components.set(EyelineGuidesComponent(isOn: false, characters: objectsContainer))
+        root.addChild(eyelinesRoot)
         onionRoot.name = Self.onionSkinName
         objectsContainer.addChild(onionRoot)
 
@@ -147,6 +152,12 @@ final class WorkspaceScene {
         SoundEffects.play(effect, on: earpieceSpeaker, gain: gain, pitchVariation: 0)
     }
 
+    // MARK: Eyelines
+
+    func setEyelinesVisible(_ isVisible: Bool) {
+        eyelinesRoot.components[EyelineGuidesComponent.self]?.isOn = isVisible
+    }
+
     // MARK: Viewfinder
 
     func setViewfinderVisible(_ isVisible: Bool) {
@@ -159,7 +170,7 @@ final class WorkspaceScene {
         return [distance * tan(lens.horizontalFOV / 2), distance * tan(lens.verticalFOV / 2)]
     }
 
-    /// Redraws the frame for the lens's field of view and the format's letterbox, like a
+    /// Redraws the frame for the lens's field of view and the format's bars, like a
     /// cinema camera's monitor: a crisp outline with corner marks, shaded matte bars,
     /// rule-of-thirds guides inside the picture area, and a small center cross.
     func setViewfinder(lens: CaptureLens, format: FrameFormat) {
@@ -169,7 +180,9 @@ final class WorkspaceScene {
         let width = half.x * 2
         let height = half.y * 2
         let matte = height * format.matteFraction
+        let pillar = width * format.pillarFraction
         let pictureHalfHeight = half.y - matte
+        let pictureHalfWidth = half.x - pillar
 
         func material(_ color: UIColor, opacity: Float) -> UnlitMaterial {
             var material = UnlitMaterial(color: color)
@@ -210,13 +223,22 @@ final class WorkspaceScene {
             bar([width, line], at: [0, pictureHalfHeight], edge)
             bar([width, line], at: [0, -pictureHalfHeight], edge)
         }
+        // Pillarbox bars for formats narrower than 16:9.
+        if pillar > 0 {
+            let shade = material(.black, opacity: 0.45)
+            bar([pillar, height], at: [half.x - pillar / 2, 0], shade, depth: 0.0005)
+            bar([pillar, height], at: [-half.x + pillar / 2, 0], shade, depth: 0.0005)
+            let edge = material(.white, opacity: 0.35)
+            bar([line, height], at: [pictureHalfWidth, 0], edge)
+            bar([line, height], at: [-pictureHalfWidth, 0], edge)
+        }
 
         // Rule-of-thirds guides within the picture area.
         let guide = material(.white, opacity: 0.18)
         let hairline: Float = 0.0005
         for third: Float in [-1, 1] {
-            bar([hairline, pictureHalfHeight * 2], at: [third * width / 6, 0], guide)
-            bar([width, hairline], at: [0, third * pictureHalfHeight / 3], guide)
+            bar([hairline, pictureHalfHeight * 2], at: [third * pictureHalfWidth / 3, 0], guide)
+            bar([pictureHalfWidth * 2, hairline], at: [0, third * pictureHalfHeight / 3], guide)
         }
 
         // Center cross.

@@ -188,6 +188,12 @@ struct JointLimits: Equatable {
         }
     }
 
+    /// How far, in total degrees, a rotation lies outside these limits. 0 when within them.
+    func excess(_ rotation: JointRotation) -> Float {
+        let clamped = clamp(rotation)
+        return abs(rotation.bend - clamped.bend) + abs(rotation.twist - clamped.twist) + abs(rotation.side - clamped.side)
+    }
+
     func clamp(_ rotation: JointRotation) -> JointRotation {
         func clamp(_ value: Float, _ range: ClosedRange<Float>) -> Float { min(max(value, range.lowerBound), range.upperBound) }
         return JointRotation(bend: clamp(rotation.bend, bend), twist: clamp(rotation.twist, twist),
@@ -438,9 +444,19 @@ enum CharacterKinematics {
         }
         let toDegrees = 180 / Float.pi
         let signs = joint.signs
-        return JointRotation(bend: bend * toDegrees * (signs.x == 0 ? 0 : signs.x),
-                             twist: twist * toDegrees * (signs.y == 0 ? 0 : signs.y),
-                             side: side * toDegrees * (signs.z == 0 ? 0 : signs.z))
+        func angles(_ bend: Float, _ twist: Float, _ side: Float) -> JointRotation {
+            JointRotation(bend: bend * toDegrees * (signs.x == 0 ? 0 : signs.x),
+                          twist: twist * toDegrees * (signs.y == 0 ? 0 : signs.y),
+                          side: side * toDegrees * (signs.z == 0 ? 0 : signs.z))
+        }
+        let primary = angles(bend, twist, side)
+        // The same rotation can also be written with the bend past 90° (and twist and side
+        // turned half way round). A hip raising the knee above the waist needs that form, so
+        // use whichever fits the joint's limits better. Hinges only bend, so they have just one.
+        guard signs.y != 0, signs.z != 0 else { return primary }
+        func wrapped(_ angle: Float) -> Float { atan2(sin(angle), cos(angle)) }
+        let alternate = angles(wrapped(.pi - bend), wrapped(twist + .pi), wrapped(side + .pi))
+        return joint.limits.excess(alternate) + 0.01 < joint.limits.excess(primary) ? alternate : primary
     }
 
     /// Turns a joint so its segment follows a drag. `from` is where the drag started and `to`
@@ -615,5 +631,89 @@ enum LimbIK {
 
     private static func signedAngle(from a: SIMD3<Float>, to b: SIMD3<Float>, around axis: SIMD3<Float>) -> Float {
         atan2(simd_dot(simd_cross(a, b), axis), simd_dot(a, b))
+    }
+}
+
+// MARK: Looking at things
+
+/// Turns a character's chest, neck, and head so its face points at a target, the way a
+/// person turns: the head does most of the work, the neck helps, and the chest joins in
+/// only for targets well to the side. Each joint stops at its limits, so a target behind
+/// the character gets as close as the body allows.
+enum HeadAim {
+    /// The joints that turn, and how much of the remaining turn each takes on its pass.
+    private static let chain: [(joint: Joint, share: Float)] = [(.chest, 0.15), (.neck, 0.5), (.head, 1)]
+
+    /// Between the eyes, relative to the head joint, at human scale in meters.
+    static func eyeOffset(layout: RigLayout) -> SIMD3<Float> {
+        let head = layout.proportions.head
+        return [0, 0.11 * head, 0.08 * head]
+    }
+
+    /// Where the eyes are and which way the face points, in the rig's own space.
+    static func eyes(in pose: CharacterPose, layout: RigLayout) -> (position: SIMD3<Float>, facing: SIMD3<Float>) {
+        let frames = CharacterKinematics.frames(for: pose, layout: layout)
+        guard let head = frames[.head] else { return (.zero, [0, 0, 1]) }
+        return (head.position + head.orientation.act(eyeOffset(layout: layout)), head.orientation.act([0, 0, 1]))
+    }
+
+    /// `pose` with the face turned toward `target`, a point in the rig's own space (the space
+    /// of `CharacterKinematics.frames`). Only the chest, neck, and head change.
+    static func aim(_ pose: CharacterPose, at target: SIMD3<Float>, layout: RigLayout) -> CharacterPose {
+        var pose = pose
+        for _ in 0..<4 {
+            for (joint, share) in chain {
+                let frames = CharacterKinematics.frames(for: pose, layout: layout)
+                let eyes = eyes(in: pose, layout: layout)
+                let toTarget = target - eyes.position
+                guard simd_length(toTarget) > 1e-4, let parent = joint.parent, let parentFrame = frames[parent]
+                else { return pose }
+                let turn = simd_quatf(from: eyes.facing, to: simd_normalize(toTarget))
+                let partial = simd_slerp(simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), turn, share)
+                // Apply the turn in the rig's space to this joint, expressed relative to its parent.
+                let parentRotation = parentFrame.orientation
+                let local = parentRotation.inverse * partial * parentRotation
+                    * CharacterKinematics.rotation(pose[joint], for: joint)
+                pose[joint] = CharacterKinematics.angles(from: local, for: joint)
+            }
+        }
+        return pose
+    }
+
+    /// How far, in degrees, the face points away from `target`: 0 when looking right at it.
+    static func angleOff(_ pose: CharacterPose, from target: SIMD3<Float>, layout: RigLayout) -> Float {
+        let eyes = eyes(in: pose, layout: layout)
+        let toTarget = target - eyes.position
+        guard simd_length(toTarget) > 1e-4 else { return 0 }
+        let cosine = simd_dot(simd_normalize(eyes.facing), simd_normalize(toTarget))
+        return acos(min(max(cosine, -1), 1)) * 180 / .pi
+    }
+}
+
+// MARK: Sitting
+
+/// Bends the legs so a character sits on a seat at a given height with its feet on the
+/// ground: thighs out over the seat, shins down to the floor.
+enum SeatedLegs {
+    /// How far the hip joints sit above the seat's top: the thickness of the thigh.
+    static let thighThickness: Float = 0.07
+
+    /// The highest seat, in meters at human scale, the character's feet can still reach the
+    /// ground from.
+    static func highestSeat(layout: RigLayout) -> Float {
+        (layout.thigh + layout.shin) * 0.97 + layout.ankleHeight - thighThickness
+    }
+
+    /// `pose` with both legs bent to sit on a seat `seatHeight` above the ground (human-scale
+    /// meters). The upper body is left as it is.
+    static func sit(_ pose: CharacterPose, seatHeight: Float, layout: RigLayout) -> CharacterPose {
+        let hipHeight = seatHeight + thighThickness
+        // Ankles under the knees: the thigh reaches forward along the seat, the shin drops.
+        let target = SIMD3<Float>(0, -(hipHeight - layout.ankleHeight), layout.thigh * 0.95)
+        var result = pose
+        for limb in [Limb.leftLeg, .rightLeg] {
+            result = LimbIK.solve(limb, reaching: target, bendDirection: 0, pose: result, layout: layout)
+        }
+        return result
     }
 }

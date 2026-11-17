@@ -41,7 +41,7 @@ struct CameraPath {
         let linear = Float((time - from.time) / (to.time - from.time))
         let eased = linear * linear * (3 - 2 * linear)
 
-        let wider = from.camera.lens.rawValue <= to.camera.lens.rawValue ? from.camera.lens : to.camera.lens
+        let wider = from.camera.lens.focalLength <= to.camera.lens.focalLength ? from.camera.lens : to.camera.lens
         let camera = CaptureCamera(
             position: mix(from.camera.position, to.camera.position, t: eased),
             orientation: simd_slerp(from.camera.orientation, to.camera.orientation, eased),

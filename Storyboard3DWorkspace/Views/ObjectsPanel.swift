@@ -122,6 +122,8 @@ struct ObjectsPanel: View {
             }
             if object.recipe.characterKind != nil {
                 CharacterInspector()
+            } else if !appModel.characters.isEmpty {
+                HoldControls(object: object)
             }
 
             ViewThatFits(in: .horizontal) {
@@ -268,6 +270,42 @@ private struct CharacterTray: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
+    }
+}
+
+/// Puts the selected object in a character's hand, or lets it go.
+private struct HoldControls: View {
+    @Environment(AppModel.self) private var appModel
+    let object: AppModel.ObjectSummary
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let holder = appModel.holderDescription(of: object.id) {
+                Label("In \(holder)", systemImage: "hand.raised.fill")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Button("Let Go", systemImage: "hand.raised.slash") { appModel.letGoOfSelectedObject() }
+                    .help("Drop it from the hand. It falls to whatever is below.")
+            } else {
+                Menu {
+                    ForEach(appModel.characters) { character in
+                        Section(character.name) {
+                            ForEach(Hand.allCases) { hand in
+                                Button(hand.name) { appModel.putSelectedObject(in: hand, of: character.id) }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Put in Hand", systemImage: "hand.raised")
+                }
+                .help("A character holds it: it follows the hand through every pose and keyframe. Pinch and drag it to adjust the grip.")
+                Spacer(minLength: 0)
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
     }
 }
 

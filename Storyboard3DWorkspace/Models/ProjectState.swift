@@ -31,6 +31,9 @@ struct ProjectState: Codable, Equatable {
         var isVisible: Bool
         /// A character's body pose. Nil for ordinary objects.
         var characterPose: CharacterPose?
+        /// The character and hand holding this object, if one is. Optional so projects saved
+        /// before props could be held still load.
+        var hold: Hold?
     }
 
     struct KeyframeState: Codable, Equatable {

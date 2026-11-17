@@ -61,6 +61,7 @@ struct ImmersiveView: View {
                 content.subscribe(to: ManipulationEvents.WillEnd.self) { event in
                     workspace.setHeld(false, for: event.entity)
                     workspace.hideGuides()
+                    appModel.manipulationEnded(on: event.entity)
                     // Auto-save the new arrangement into the selected keyframe once it settles.
                     appModel.sceneEdited()
                 }

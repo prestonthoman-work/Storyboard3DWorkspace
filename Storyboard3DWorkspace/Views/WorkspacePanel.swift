@@ -79,6 +79,10 @@ private struct WorkspaceOrnament: View {
                     Label("Labels", systemImage: "tag")
                 }
                 .help("Show each object's name above it in the room. Labels never appear in photos.")
+                Toggle(isOn: $appModel.showsEyelines) {
+                    Label("Eyelines", systemImage: "eye")
+                }
+                .help("Show where each character is looking, and the 180° line between two characters. Never in photos.")
             }
             .toggleStyle(.button)
         }

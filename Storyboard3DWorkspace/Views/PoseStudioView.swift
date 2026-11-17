@@ -111,6 +111,11 @@ private struct PoseStudioPanel: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
 
+                    SceneActions()
+                    if let note = appModel.poseNote {
+                        StatusMessage(note, kind: .warning)
+                    }
+
                     Divider()
 
                     BodyPartPicker()
@@ -134,6 +139,49 @@ private struct PoseStudioPanel: View {
         }
         .frame(width: 460, height: 640)
         .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+    }
+}
+
+/// Posing against the rest of the scene: look at something, aim again after things move,
+/// or sit on an object.
+private struct SceneActions: View {
+    @Environment(AppModel.self) private var appModel
+
+    var body: some View {
+        let others = appModel.objects.filter { $0.id != appModel.selectedObjectID }
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(others) { object in
+                    Button(object.name, systemImage: object.recipe.characterKind?.symbol ?? "cube") {
+                        appModel.lookSelectedCharacter(at: object.id)
+                    }
+                }
+            } label: {
+                Label("Look At", systemImage: "eye")
+            }
+            .disabled(others.isEmpty)
+            .help("Turn the head, neck, and chest to face another object or character")
+
+            if let target = appModel.selectedLookTarget {
+                Button("Re-aim at \(target.name)", systemImage: "scope") { appModel.reaimSelectedCharacter() }
+                    .labelStyle(.iconOnly)
+                    .buttonBorderShape(.circle)
+                    .help("Look at \(target.name) again after either of you moved")
+            }
+
+            Menu {
+                ForEach(appModel.seats) { seat in
+                    Button(seat.name) { appModel.sitSelectedCharacter(on: seat.id) }
+                }
+            } label: {
+                Label("Sit On", systemImage: "figure.seated.side")
+            }
+            .disabled(appModel.seats.isEmpty)
+            .help("Sit on an object: the legs bend to its height and the character moves on top of it")
+            Spacer(minLength: 0)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
     }
 }
 

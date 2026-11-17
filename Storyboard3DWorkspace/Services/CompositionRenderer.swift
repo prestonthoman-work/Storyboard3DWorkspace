@@ -3,6 +3,7 @@
 //  Storyboard3DWorkspace
 //
 
+import Accelerate
 import CoreGraphics
 import Metal
 import RealityKit
@@ -56,6 +57,8 @@ final class CompositionRenderer {
     /// interaction-only pieces. Taking it is instant, so the live scene can be posed,
     /// copied, and put back before anything is drawn.
     static func snapshot(of scene: Entity) -> Entity {
+        // Held objects follow their hands every frame; make sure they're there for this pose.
+        HeldProps.attachAll(in: scene)
         let subject = scene.clone(recursive: true)
         subject.findEntity(named: WorkspaceScene.selectionIndicatorName)?.removeFromParent()
         subject.findEntity(named: WorkspaceScene.onionSkinName)?.removeFromParent()
@@ -86,6 +89,12 @@ final class CompositionRenderer {
         camera.position = captureCamera.position
         camera.orientation = captureCamera.orientation
 
+        // With lens blur, the camera also renders from points across the lens, each turned
+        // slightly toward the focus point, so the backdrop needs room beyond the frame.
+        let focusDistance = look.depthOfField.map { Self.focusDistance(for: $0, in: subject, camera: captureCamera) }
+        let apertureRadius = look.depthOfField?.apertureRadius(for: captureCamera.lens) ?? 0
+        let backdropMargin = focusDistance.map { 2 * apertureRadius * (1 / $0 + 1) / tan(captureCamera.lens.verticalFOV / 2) } ?? 0
+
         let backdropCopy = try await makeBackdrop(
             live: backdrop,
             image: background,
@@ -93,7 +102,8 @@ final class CompositionRenderer {
             camera: captureCamera,
             sceneCenter: center,
             sceneRadius: radius,
-            tint: lighting.backdropTint
+            tint: lighting.backdropTint,
+            margin: backdropMargin
         )
 
         renderer.entities.append(contentsOf: [subject, backdropCopy, camera]
@@ -115,18 +125,174 @@ final class CompositionRenderer {
         guard let texture = device.makeTexture(descriptor: descriptor) else { throw RenderError.renderFailed }
 
         let output = try RealityRenderer.CameraOutput(.singleProjection(colorTexture: texture))
-        try renderer.update(0)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            do {
-                try renderer.updateAndRender(deltaTime: 0, cameraOutput: output, onComplete: { _ in
-                    continuation.resume()
-                })
-            } catch {
-                continuation.resume(throwing: error)
+        func renderFrame() async throws {
+            try renderer.update(0)
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                do {
+                    try renderer.updateAndRender(deltaTime: 0, cameraOutput: output, onComplete: { _ in
+                        continuation.resume()
+                    })
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
         }
 
-        return FilmFinisher.finish(try Self.makeImage(from: texture), look: look, lighting: lighting)
+        let image: CGImage
+        if let depthOfField = look.depthOfField, let focusDistance {
+            // A real lens blurs because light reaches the sensor through every point of its
+            // opening. Render from points spread across that opening, each aimed at the same
+            // focus point, and average them: what's at the focus distance lines up in every
+            // render and stays sharp, and everything else smears by how far it is from it.
+            let views = Self.apertureViews(of: captureCamera, focusDistance: focusDistance,
+                                           radius: apertureRadius,
+                                           count: Self.sampleCount(for: depthOfField))
+            var accumulator = Accumulator(width: Self.outputWidth, height: Self.outputHeight)
+            for view in views {
+                camera.position = view.position
+                camera.orientation = view.orientation
+                try await renderFrame()
+                accumulator.add(texture)
+            }
+            image = try accumulator.average()
+        } else {
+            try await renderFrame()
+            image = try Self.makeImage(from: texture)
+        }
+        return FilmFinisher.finish(image, look: look, lighting: lighting)
+    }
+
+    // MARK: Depth of field
+
+    /// Renders to average for lens blur. Wide apertures blur more, so they need more
+    /// renders to keep the blur smooth instead of showing separate copies.
+    static func sampleCount(for depthOfField: DepthOfField) -> Int {
+        switch depthOfField.fStop {
+        case ..<2.5: 48
+        case ..<5: 32
+        default: 16
+        }
+    }
+
+    /// How far in front of the camera to focus: on the chosen object's center, or, for
+    /// automatic focus, on the nearest object the frame's center passes through. If the
+    /// center hits nothing, the object nearest the center of the frame is used.
+    static func focusDistance(for depthOfField: DepthOfField, in scene: Entity, camera: CaptureCamera) -> Float {
+        let forward = camera.orientation.act([0, 0, -1])
+        func depth(of point: SIMD3<Float>) -> Float { simd_dot(point - camera.position, forward) }
+
+        var objects: [(id: ObjectID, bounds: BoundingBox)] = []
+        func collect(_ entity: Entity) {
+            if let placed = entity.components[PlacedObjectComponent.self] {
+                if entity.isEnabled {
+                    let bounds = entity.visualBounds(relativeTo: nil)
+                    if !bounds.isEmpty { objects.append((placed.id, bounds)) }
+                }
+                return
+            }
+            entity.children.forEach(collect)
+        }
+        collect(scene)
+
+        if let id = depthOfField.focusObject, let chosen = objects.first(where: { $0.id == id }) {
+            return max(depth(of: chosen.bounds.center), 0.05)
+        }
+        let hits = objects.compactMap { object in
+            rayEntry(origin: camera.position, direction: forward, bounds: object.bounds).map { _ in depth(of: object.bounds.center) }
+        }
+        if let nearest = hits.filter({ $0 > 0 }).min() { return max(nearest, 0.05) }
+
+        // Nothing at the center: focus on the object closest to the middle of the picture.
+        let inFront = objects.filter { depth(of: $0.bounds.center) > 0.05 }
+        let closest = inFront.min { a, b in
+            angle(to: a.bounds.center, from: camera.position, forward: forward)
+                < angle(to: b.bounds.center, from: camera.position, forward: forward)
+        }
+        if let closest { return depth(of: closest.bounds.center) }
+        let bounds = scene.visualBounds(relativeTo: nil)
+        return bounds.isEmpty ? 0.5 : max(depth(of: bounds.center), 0.05)
+    }
+
+    private static func angle(to point: SIMD3<Float>, from origin: SIMD3<Float>, forward: SIMD3<Float>) -> Float {
+        acos(min(max(simd_dot(simd_normalize(point - origin), forward), -1), 1))
+    }
+
+    /// Where a ray enters a box, as a distance along the ray; nil if it misses.
+    static func rayEntry(origin: SIMD3<Float>, direction: SIMD3<Float>, bounds: BoundingBox) -> Float? {
+        var near = -Float.infinity
+        var far = Float.infinity
+        for axis in 0..<3 {
+            if abs(direction[axis]) < 1e-6 {
+                if origin[axis] < bounds.min[axis] || origin[axis] > bounds.max[axis] { return nil }
+                continue
+            }
+            let a = (bounds.min[axis] - origin[axis]) / direction[axis]
+            let b = (bounds.max[axis] - origin[axis]) / direction[axis]
+            near = max(near, min(a, b))
+            far = min(far, max(a, b))
+        }
+        guard near <= far, far > 0 else { return nil }
+        return max(near, 0)
+    }
+
+    /// Camera poses spread evenly across a round lens opening (a sunflower spiral), each
+    /// turned to look at the same point at `focusDistance` straight ahead of the original.
+    static func apertureViews(of camera: CaptureCamera, focusDistance: Float, radius: Float,
+                              count: Int) -> [(position: SIMD3<Float>, orientation: simd_quatf)] {
+        let right = camera.orientation.act([1, 0, 0])
+        let up = camera.orientation.act([0, 1, 0])
+        let focus = camera.position + camera.orientation.act([0, 0, -1]) * focusDistance
+        let goldenAngle = Float.pi * (3 - sqrt(5))
+        return (0..<count).map { index in
+            let r = radius * sqrt((Float(index) + 0.5) / Float(count))
+            let theta = Float(index) * goldenAngle
+            let position = camera.position + right * (r * cos(theta)) + up * (r * sin(theta))
+            return (position, lookRotation(forward: simd_normalize(focus - position), up: up))
+        }
+    }
+
+    /// A rotation whose -Z points along `forward`, keeping +Y as close to `up` as it can.
+    private static func lookRotation(forward: SIMD3<Float>, up: SIMD3<Float>) -> simd_quatf {
+        let back = -forward
+        let right = simd_normalize(simd_cross(up, back))
+        let trueUp = simd_cross(back, right)
+        return simd_quatf(simd_float3x3(columns: (right, trueUp, back)))
+    }
+
+    /// Sums rendered frames, pixel by pixel, to average them.
+    private struct Accumulator {
+        let width: Int
+        let height: Int
+        private var sums: [Float]
+        private var frame: [Float]
+        private var bytes: [UInt8]
+        private var count = 0
+
+        init(width: Int, height: Int) {
+            self.width = width
+            self.height = height
+            sums = [Float](repeating: 0, count: width * height * 4)
+            frame = sums
+            bytes = [UInt8](repeating: 0, count: width * height * 4)
+        }
+
+        mutating func add(_ texture: any MTLTexture) {
+            texture.getBytes(&bytes, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+            let length = vDSP_Length(bytes.count)
+            vDSP_vfltu8(bytes, 1, &frame, 1, length)
+            vDSP_vadd(sums, 1, frame, 1, &sums, 1, length)
+            count += 1
+        }
+
+        /// The average, in the same pixel layout as `makeImage(from:)`. Frames are averaged
+        /// as stored (sRGB-encoded), which is close enough to how lens blur mixes light here.
+        mutating func average() throws -> CGImage {
+            var divisor = Float(max(count, 1))
+            let length = vDSP_Length(sums.count)
+            vDSP_vsdiv(sums, 1, &divisor, &frame, 1, length)
+            vDSP_vfixru8(frame, 1, &bytes, 1, length)
+            return try CompositionRenderer.makeImage(bytes: bytes, width: width, height: height)
+        }
     }
 
     private static func stripInteraction(from entity: Entity) {
@@ -148,7 +314,7 @@ final class CompositionRenderer {
     /// at all, a frame-filling plane is built behind the scene instead.
     private func makeBackdrop(live: ModelEntity, image: CGImage, pose: Transform?, camera: CaptureCamera,
                               sceneCenter: SIMD3<Float>, sceneRadius: Float, tint: SIMD3<Float>,
-                              texture cachedTexture: TextureResource? = nil) async throws -> Entity {
+                              texture cachedTexture: TextureResource? = nil, margin: Float = 0) async throws -> Entity {
         if live.isEnabled, let mesh = live.model?.mesh {
             let copy = live.clone(recursive: false)
             // The copy must hold still: the live system would otherwise re-aim it in the render scene.
@@ -160,8 +326,9 @@ final class CompositionRenderer {
             }
             let halfSize = SIMD2(mesh.bounds.extents.x, mesh.bounds.extents.y) / 2
 
-            if let scale = Self.coverageScale(planeTransform: copy.transformMatrix(relativeTo: nil),
-                                              halfSize: halfSize, camera: camera) {
+            if let fitScale = Self.coverageScale(planeTransform: copy.transformMatrix(relativeTo: nil),
+                                                 halfSize: halfSize, camera: camera) {
+                let scale = margin > 0 ? fitScale * (1 + margin) : fitScale
                 if scale > 1 {
                     // Grow around the point on the plane where the camera's center ray lands.
                     let axisHit = Self.hit(direction: camera.orientation.act([0, 0, -1]), from: camera.position,
@@ -189,7 +356,7 @@ final class CompositionRenderer {
 
         let forward = camera.orientation.act([0, 0, -1])
         let depth = max(simd_dot(sceneCenter - camera.position, forward), 0.2) + sceneRadius + BackdropLayout.gapBehindTarget
-        let frameHeight = 2 * depth * tan(camera.lens.verticalFOV / 2) * 1.02
+        let frameHeight = 2 * depth * tan(camera.lens.verticalFOV / 2) * (1.02 + margin)
         let frameWidth = frameHeight * CaptureLens.aspect
         let imageAspect = Float(image.width) / Float(max(image.height, 1))
         let size: SIMD2<Float> = imageAspect > CaptureLens.aspect
@@ -297,7 +464,12 @@ final class CompositionRenderer {
         var bytes = [UInt8](repeating: 0, count: bytesPerRow * height)
         texture.getBytes(&bytes, bytesPerRow: bytesPerRow,
                          from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        return try makeImage(bytes: bytes, width: width, height: height)
+    }
 
+    /// An image from BGRA pixels, as read from the render texture.
+    fileprivate static func makeImage(bytes: [UInt8], width: Int, height: Int) throws -> CGImage {
+        let bytesPerRow = width * 4
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
               let provider = CGDataProvider(data: Data(bytes) as CFData),
               let image = CGImage(
