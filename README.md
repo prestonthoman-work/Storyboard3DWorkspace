@@ -60,7 +60,7 @@ Tests that save projects point `ProjectStore.storageOverride` at a temporary fol
 | Folder | What's in it |
 | --- | --- |
 | `AppModel.swift` | App-wide state: the open project, objects, keyframes, capture, undo, and saving. Views read and change the app through it. |
-| `Models/` | Value types and small controllers: keyframe timeline and animator, photo library, camera paths, capture settings, export (`ExportController`). |
+| `Models/` | Value types and small controllers: keyframe timeline and animator, photo library, camera paths, capture settings, export (`ExportController`), character posing and saved poses (`PoseEditor`). |
 | `Scene/` | RealityKit content: the workspace scene, base templates, sample objects, gravity, selection handles, table anchoring (`TableAnchoring`). |
 | `Services/` | Rendering, export writers, project storage (`ProjectStore`), spatial tracking, dictation, and model generation. |
 | `Views/` | SwiftUI panels and windows: the workspace tabs, timeline window, storyboard viewer, projects list. |
