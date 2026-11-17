@@ -23,6 +23,7 @@ struct ObjectsPanel: View {
                     } content: {
                         CatalogTray()
                         CharacterTray()
+                        ModelImportButton()
                         PromptField(placeholder: "Or describe one, like a red house",
                                     text: $appModel.objectPrompt,
                                     isWorking: appModel.isGeneratingObject,
@@ -172,6 +173,10 @@ private struct ObjectThumbnail: View {
             } else if let character = object.recipe.characterKind {
                 Image(systemName: character.symbol)
                     .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+            } else if object.recipe.importedFileID != nil {
+                Image(systemName: "arkit")
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
             } else {
                 Image(systemName: isSelected ? "cube.fill" : "cube")
                     .foregroundStyle(isSelected ? Color.accentColor : .secondary)
@@ -259,9 +264,38 @@ private struct CharacterTray: View {
                     .help("Add a poseable \(kind.name.lowercased()). Pose it in the Pose Studio.")
                 }
             }
-            Text("Characters are posed in the Pose Studio. Other objects, including generated ones, move as a whole.")
+            Text("Characters are posed in the Pose Studio. Other objects, including imported ones, move as a whole.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+/// Adds a USDZ file from Files as an object.
+private struct ModelImportButton: View {
+    @Environment(AppModel.self) private var appModel
+    @State private var isChoosingFile = false
+
+    var body: some View {
+        Button {
+            isChoosingFile = true
+        } label: {
+            HStack(spacing: 8) {
+                if appModel.isImportingModel {
+                    ProgressView().controlSize(.small)
+                    Text("Importing…")
+                } else {
+                    Label("Import a 3D Model", systemImage: "square.and.arrow.down")
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+        .disabled(!appModel.canImportModel)
+        .help("Add a USDZ file, such as one from Reality Composer Pro or Object Capture. It's sized to match the other objects and moves as a whole.")
+        .fileImporter(isPresented: $isChoosingFile, allowedContentTypes: ImportedModels.contentTypes) { result in
+            if case .success(let url) = result {
+                Task { await appModel.importModel(from: url) }
+            }
         }
     }
 }

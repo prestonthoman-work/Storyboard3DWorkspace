@@ -223,6 +223,7 @@ class AppModel {
         if currentProject?.id == id {
             currentProject = nil
             resetToEmptyProject()
+            ImportedModels.keepOnly([])
             // Its unsaved changes went with it.
             hasUnsavedChanges = false
             saveError = nil
@@ -243,6 +244,9 @@ class AppModel {
             return false
         }
 
+        let usedModels = Set(loaded?.saved.state.objects.compactMap(\.recipe.importedFileID) ?? [])
+        let missingModels = await loadImportedModels(usedModels, in: info.id)
+
         resetToEmptyProject()
         currentProject = info
         selectedTab = .set
@@ -251,12 +255,19 @@ class AppModel {
         var restoredBackdrop: BackdropImage?
         if let loaded {
             missingPhotos = loaded.missingPhotos
+            var notices: [String] = []
             if !missingPhotos.isEmpty {
                 let count = missingPhotos.count
-                projectNotice = count == 1
+                notices.append(count == 1
                     ? "1 photo in this project couldn't be found, so it isn't shown."
-                    : "\(count) photos in this project couldn't be found, so they aren't shown."
+                    : "\(count) photos in this project couldn't be found, so they aren't shown.")
             }
+            if missingModels > 0 {
+                notices.append(missingModels == 1
+                    ? "1 imported model couldn't be read, so a gray box stands in for it."
+                    : "\(missingModels) imported models couldn't be read, so gray boxes stand in for them.")
+            }
+            projectNotice = notices.isEmpty ? nil : notices.joined(separator: " ")
             isRestoring = true
             photos.load(loaded.photos, primaries: loaded.saved.state.primaryPhotoIDs)
             captureLens = loaded.saved.captureLens
@@ -269,6 +280,9 @@ class AppModel {
                 backdropFileID = backdrop.fileID
             }
         }
+        // The previous project's models are no longer needed. They're kept until its objects
+        // are cleared, in case anything rebuilt them while this project's models loaded.
+        ImportedModels.keepOnly(usedModels)
 
         if let restoredBackdrop {
             await apply(restoredBackdrop, isRestoredFromDisk: true)
@@ -278,6 +292,21 @@ class AppModel {
         hasUnsavedChanges = false
         refreshProjects()
         return true
+    }
+
+    /// Loads the imported model files a project uses, so its objects can be built, after
+    /// deleting stored files it no longer uses. Returns how many couldn't be read.
+    private func loadImportedModels(_ used: Set<UUID>, in project: UUID) async -> Int {
+        ProjectStore.removeUnusedModels(in: project, keeping: used)
+        var unreadable = 0
+        for fileID in used where !ImportedModels.isLoaded(fileID) {
+            do {
+                try await ImportedModels.load(fileID, from: ProjectStore.modelFile(project, fileID))
+            } catch {
+                unreadable += 1
+            }
+        }
+        return unreadable
     }
 
     private func resetToEmptyProject() {
@@ -472,6 +501,56 @@ class AppModel {
                              recipe: recipe,
                              entity: SampleObjectCatalog.make(kind, tint: SampleObjectCatalog.color(named: color)),
                              note: nil))
+    }
+
+    // Imported models
+
+    private(set) var isImportingModel = false
+    var canImportModel: Bool { currentProject != nil && !isImportingModel }
+
+    /// Copies a USDZ file into the project and places it, fitted to the size of the built-in
+    /// objects. It moves and resizes as a whole; only built-in characters can be posed.
+    func importModel(from url: URL) async {
+        guard let project = currentProject, !isImportingModel else { return }
+        animator.pause()
+        objectError = nil
+        objectNote = nil
+        isImportingModel = true
+        defer { isImportingModel = false }
+
+        let name = Self.modelName(for: url)
+        let fileID: UUID
+        do {
+            let isScoped = url.startAccessingSecurityScopedResource()
+            defer { if isScoped { url.stopAccessingSecurityScopedResource() } }
+            fileID = try ProjectStore.importModel(from: url, into: project.id)
+        } catch {
+            objectError = "“\(url.lastPathComponent)” couldn't be copied into the project. \(error.localizedDescription)"
+            return
+        }
+        do {
+            try await ImportedModels.load(fileID, from: ProjectStore.modelFile(project.id, fileID))
+        } catch {
+            ProjectStore.removeModel(fileID, from: project.id)
+            let reason = (error as? ImportedModels.ImportError)?.localizedDescription
+                ?? "It may be damaged, or not a USDZ file."
+            objectError = "“\(url.lastPathComponent)” couldn't be opened as a 3D model. \(reason)"
+            return
+        }
+        // Another project may have been opened while the file loaded.
+        guard currentProject?.id == project.id, let entity = ImportedModels.instance(of: fileID) else { return }
+        place(GeneratedModel(displayName: name, source: .imported,
+                             recipe: .importedModel(fileID: fileID, name: name), entity: entity, note: nil))
+    }
+
+    /// A readable object name from a file name: "old_red-barn.usdz" → "old red barn".
+    static func modelName(for url: URL) -> String {
+        let words = url.deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .split(separator: " ")
+            .joined(separator: " ")
+        return words.isEmpty ? "Model" : words
     }
 
     // MARK: Characters

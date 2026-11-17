@@ -19,6 +19,8 @@ extension ModelRecipe {
             return BaseTemplate(rawValue: name)?.name
         case .character(let kind, _, _):
             return CharacterKind(rawValue: kind).map { prefix + $0.name }
+        case .importedModel(_, let name):
+            return name
         }
     }
 
@@ -41,6 +43,10 @@ extension ModelRecipe {
         case .character(let kind, let color, let proportions):
             guard let kind = CharacterKind(rawValue: kind) else { return nil }
             return CharacterBuilder.make(kind, proportions: proportions, tint: SampleObjectCatalog.color(named: color))
+        case .importedModel(let fileID, _):
+            // A gray box stands in for a model whose file couldn't be loaded, so the object
+            // (and its place in every keyframe) isn't lost.
+            return ImportedModels.instance(of: fileID) ?? SampleObjectCatalog.makePlaceholder(tint: nil)
         }
     }
 }

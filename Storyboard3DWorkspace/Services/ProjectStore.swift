@@ -13,6 +13,7 @@ import UIKit
 /// - `project.json`: the `ProjectState`, the lens, and which backdrop is in use
 /// - `photos/<id>.jpg` and `photos/<id>-thumb.jpg`: each photo and its thumbnail
 /// - `backdrop-<id>.jpg`: an imported backdrop image (the built-in sky isn't stored)
+/// - `models/<id>.usdz`: each imported 3D model, named by its recipe's file ID
 enum ProjectStore {
     struct Info: Codable, Identifiable, Equatable {
         var id: UUID
@@ -73,6 +74,13 @@ enum ProjectStore {
     }
     private static func backdropFile(_ project: UUID, _ file: UUID) -> URL {
         folder(project).appending(path: "backdrop-\(file.uuidString).jpg")
+    }
+    private static func modelsFolder(_ project: UUID) -> URL {
+        folder(project).appending(path: "models", directoryHint: .isDirectory)
+    }
+    /// Where an imported model is stored.
+    static func modelFile(_ project: UUID, _ file: UUID) -> URL {
+        modelsFolder(project).appending(path: "\(file.uuidString).usdz")
     }
 
     // MARK: Project list
@@ -186,6 +194,31 @@ enum ProjectStore {
         encoder.outputFormatting = .prettyPrinted
         try encoder.encode(project).write(to: projectFile(id), options: .atomic)
         try write(info)
+    }
+
+    // MARK: Imported models
+
+    /// Copies a model file into the project. Returns the ID it's stored under.
+    static func importModel(from source: URL, into project: UUID) throws -> UUID {
+        let id = UUID()
+        try FileManager.default.createDirectory(at: modelsFolder(project), withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: source, to: modelFile(project, id))
+        return id
+    }
+
+    static func removeModel(_ file: UUID, from project: UUID) {
+        try? FileManager.default.removeItem(at: modelFile(project, file))
+    }
+
+    /// Deletes stored models the project doesn't use. Call only when opening a project: while
+    /// it's open, undo can bring back a deleted object, and it needs its model file.
+    static func removeUnusedModels(in project: UUID, keeping used: Set<UUID>) {
+        let keep = Set(used.map { modelFile(project, $0).lastPathComponent })
+        let folder = modelsFolder(project)
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: folder.path(percentEncoded: false))) ?? []
+        where !keep.contains(name) {
+            try? FileManager.default.removeItem(at: folder.appending(path: name))
+        }
     }
 
     // MARK: Loading

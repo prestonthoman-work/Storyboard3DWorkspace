@@ -5,7 +5,7 @@ A visionOS app for planning a film shot by shot. You set up a small 3D set on a 
 ## How it works
 
 1. **Set the stage.** The round base finds a table in your room and sits on it. If no table is found, it floats in front of you. Choose a surface, resize the base or spin it by its edge, and pick a backdrop (a built-in sky or your own image).
-2. **Build the set.** Place objects from the library, or type a prompt. Pinch and drag to arrange them; they fall under gravity and stack on each other.
+2. **Build the set.** Place objects from the library, type a prompt, or import your own 3D model (a USDZ file, such as one from Reality Composer Pro or Object Capture). An imported model is sized to match the built-in objects, centered, and set on the base; it's copied into the project, so it travels with duplicates and reopens with the project. Pinch and drag to arrange them; they fall under gravity and stack on each other.
    **Characters.** Three built-in poseable figures (Mannequin, Child, Stocky Figure) share one 17-joint rig: hips, waist, chest, neck and head, plus a shoulder, elbow and hand on each arm and a hip, knee and foot on each leg. In the scene a character moves, turns and resizes like any object; you can recolor it and adjust its height, build, head and legs. Posing happens in the **Pose Studio**, a separate window showing the character about 55 cm tall: pinch any body part and drag it to swing it at its joint, or grab a hand or foot and the arm or leg bends to follow (inverse kinematics). The panel beside it holds every control: undo and redo, every body part with exact angle sliders and ±5° steps (and for hands and feet, the elbow or knee direction and position), an orange Reset for the selected part, and a red Reset Whole Pose. Every joint has limits, and body parts can't pass through each other: an arm or leg dragged or slid into the body stops at its surface and slides along it (a little overlap is allowed, as with the real wooden figure). The Poses menu has ten presets (sitting says it needs a prop to sit on), Mirror Pose, and your own saved poses, which work in any project. Drag the studio floor, or use the front/side/back buttons, to look from any side. Edits go straight to the character in the scene, with undo.
 3. **Animate.** A keyframe saves where everything is, including each character's pose. Move things and add another keyframe, and playback glides between them. Choose **Hold, then Cut** on a keyframe to keep its poses until the next one, for storyboards of distinct poses. Each keyframe can hold a shot type (wide, close-up, and so on) and notes, which you can type or dictate.
 4. **Shoot.** Look at the scene through the viewfinder and take a photo for each keyframe. Lens, lighting and film look are adjustable, and photos re-render automatically when their keyframe changes.
@@ -16,7 +16,7 @@ A visionOS app for planning a film shot by shot. You set up a small 3D set on a 
 
 Projects save automatically. If a save fails, the workspace shows a banner with a Try Again button, and the app won't switch projects until the changes are saved.
 
-> **Characters and imported models.** Only the built-in characters are poseable. The app has no 3D model import, and generated or sample objects can only be moved as a whole; nothing is rigged automatically.
+> **Characters and imported models.** Only the built-in characters are poseable. Imported, generated and sample objects move, turn and resize as a whole; nothing is rigged automatically, and imported models keep their own colors (they can't be recolored). Only USDZ files can be imported, since other USD files can point at textures stored beside them. If a project's model file goes missing, a gray box stands in for it and the project says so.
 
 > **Prompts are sample-only.** No AI model generation is connected yet. Prompts are matched against the built-in object catalog, and anything unknown becomes a placeholder. To connect a real service, see `ModelGenerationServiceProvider` in `Services/ModelGenerationService.swift`.
 
@@ -62,7 +62,7 @@ Tests that save projects point `ProjectStore.storageOverride` at a temporary fol
 | `AppModel.swift` | App-wide state: the open project, objects, keyframes, capture, undo, and saving. Views read and change the app through it. |
 | `Models/` | Value types and small controllers: keyframe timeline and animator, photo library, camera paths, capture settings, export (`ExportController`), character posing and saved poses (`PoseEditor`). |
 | `Scene/` | RealityKit content: the workspace scene, base templates, sample objects, gravity, selection handles, table anchoring (`TableAnchoring`). |
-| `Services/` | Rendering, export writers, project storage (`ProjectStore`), spatial tracking, dictation, and model generation. |
+| `Services/` | Rendering, export writers, project storage (`ProjectStore`), imported models (`ImportedModels`), spatial tracking, dictation, and model generation. |
 | `Views/` | SwiftUI panels and windows: the workspace tabs, timeline window, storyboard viewer, projects list. |
 
 Projects are stored in Application Support under `Projects/<id>/`. The comment at the top of `Services/ProjectStore.swift` describes the files in each project folder.
