@@ -312,6 +312,9 @@ private struct ExportButton: View {
                     appModel.exportAnimatic()
                 }
                 .disabled(!appModel.canExportAnimatic)
+                if appModel.captureLook.depthOfField != nil {
+                    Toggle("Depth of Field (slower)", isOn: $exports.animaticDepthOfField)
+                }
             } header: {
                 Text("Animatic Video")
             } footer: {
@@ -341,6 +344,20 @@ private struct ExportButton: View {
                     appModel.exportStoryboardSheet()
                 }
             }
+            Section {
+                Toggle("Crop to Frame Shape", isOn: $exports.cropsToFrameShape)
+            } footer: {
+                Text("Videos and the sheet take the camera's frame shape (\(appModel.captureLook.format.label)), such as a real vertical video, instead of 16:9 with bars.")
+            }
+            Section {
+                Button("Export Shot List", systemImage: "tablecells") {
+                    appModel.exportShotList()
+                }
+            } header: {
+                Text("Shot List (CSV)")
+            } footer: {
+                Text("One row per shot with its type, notes, lens, aperture, frame, lighting, and who's in it. Opens in Numbers or Excel.")
+            }
         } label: {
             if exports.isExporting {
                 ProgressView()
@@ -349,7 +366,7 @@ private struct ExportButton: View {
             }
         }
         .disabled(appModel.animator.timeline.keyframes.isEmpty || exports.isExporting)
-        .help("Export an animatic, a slideshow video, or a printable storyboard sheet")
+        .help("Export an animatic, a slideshow video, a printable storyboard sheet, or a shot list")
     }
 }
 

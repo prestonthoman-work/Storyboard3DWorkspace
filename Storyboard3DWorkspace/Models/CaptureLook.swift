@@ -3,6 +3,7 @@
 //  Storyboard3DWorkspace
 //
 
+import CoreGraphics
 import Foundation
 
 /// Frame shapes. Captures always render at 16:9 so every export stays the same size:
@@ -59,6 +60,26 @@ nonisolated enum FrameFormat: String, Codable, CaseIterable, Identifiable {
     /// The fraction of the 16:9 frame's width covered by each pillarbox bar (left and right).
     var pillarFraction: Float {
         max(0, (1 - aspect / CaptureLens.aspect) / 2)
+    }
+
+    /// The size photos are rendered at (`CompositionRenderer.outputWidth` × `outputHeight`).
+    static let captureWidth = 2560
+    static let captureHeight = 1440
+
+    /// The picture inside the bars of a 16:9 frame `width` × `height` pixels, in whole pixels.
+    func pictureRect(width: Int, height: Int) -> CGRect {
+        let barWidth = (CGFloat(width) * CGFloat(pillarFraction)).rounded()
+        let barHeight = (CGFloat(height) * CGFloat(matteFraction)).rounded()
+        return CGRect(x: barWidth, y: barHeight, width: CGFloat(width) - 2 * barWidth, height: CGFloat(height) - 2 * barHeight)
+    }
+
+    /// The video size for exports cut to this shape: the picture inside a photo's bars, at
+    /// most 1920 pixels on its long side, in even numbers (as video encoders need).
+    var videoSize: (width: Int, height: Int) {
+        let picture = pictureRect(width: Self.captureWidth, height: Self.captureHeight)
+        let scale = min(1, 1920 / max(picture.width, picture.height))
+        func even(_ value: CGFloat) -> Int { Int((value * scale / 2).rounded()) * 2 }
+        return (even(picture.width), even(picture.height))
     }
 }
 

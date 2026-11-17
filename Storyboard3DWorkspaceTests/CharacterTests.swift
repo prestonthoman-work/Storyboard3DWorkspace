@@ -9,7 +9,9 @@ import RealityKit
 import Testing
 @testable import Storyboard3DWorkspace
 
-/// The mannequin's rig math: joint angles, inverse kinematics, and presets.
+/// The mannequin's rig math: joint angles, inverse kinematics, and presets. On the main
+/// actor, where the app's types (and their Codable conformances) live.
+@MainActor
 struct CharacterRigTests {
     let layout = RigLayout(proportions: CharacterProportions())
 

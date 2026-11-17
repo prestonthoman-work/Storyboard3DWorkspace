@@ -149,6 +149,7 @@ private struct SceneActions: View {
 
     var body: some View {
         let others = appModel.objects.filter { $0.id != appModel.selectedObjectID }
+        VStack(alignment: .leading, spacing: 8) {
         HStack(spacing: 8) {
             Menu {
                 ForEach(others) { object in
@@ -160,15 +161,22 @@ private struct SceneActions: View {
                 Label("Look At", systemImage: "eye")
             }
             .disabled(others.isEmpty)
-            .help("Turn the head, neck, and chest to face another object or character")
+            .help("Keep the head, neck, and chest turned toward another object or character, even as you both move")
 
             if let target = appModel.selectedLookTarget {
-                Button("Re-aim at \(target.name)", systemImage: "scope") { appModel.reaimSelectedCharacter() }
+                Text("Looking at \(target.name)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Button("Stop Looking", systemImage: "eye.slash") { appModel.stopLookingSelectedCharacter() }
                     .labelStyle(.iconOnly)
                     .buttonBorderShape(.circle)
-                    .help("Look at \(target.name) again after either of you moved")
+                    .help("Stop following \(target.name); the head stays where it is")
             }
 
+            Spacer(minLength: 0)
+        }
+        HStack(spacing: 8) {
             Menu {
                 ForEach(appModel.seats) { seat in
                     Button(seat.name) { appModel.sitSelectedCharacter(on: seat.id) }
@@ -178,7 +186,38 @@ private struct SceneActions: View {
             }
             .disabled(appModel.seats.isEmpty)
             .help("Sit on an object: the legs bend to its height and the character moves on top of it")
+
+            Menu {
+                ForEach(appModel.seats) { support in
+                    Menu(support.name) {
+                        ForEach(LeanPart.allCases) { part in
+                            Button(part.name) { appModel.leanSelectedCharacter(on: support.id, with: part) }
+                        }
+                    }
+                }
+            } label: {
+                Label("Lean On", systemImage: "figure.stand.line.dotted.figure.stand")
+            }
+            .disabled(appModel.seats.isEmpty)
+            .help("Lean on an object with the back, a shoulder, a hand, the hip, or the elbows")
+
+            Menu {
+                ForEach(appModel.handHoldPartners) { partner in
+                    Button(partner.name, systemImage: partner.recipe.characterKind?.symbol ?? "figure.stand") {
+                        appModel.holdHands(with: partner.id)
+                    }
+                }
+            } label: {
+                Label("Hold Hands", systemImage: "figure.2")
+            }
+            .disabled(appModel.handHoldPartners.isEmpty)
+            .help("Hold hands with another character: the nearest hands meet between you")
             Spacer(minLength: 0)
+        }
+        Toggle("Walk Between Keyframes", systemImage: "figure.walk", isOn: Binding(
+            get: { appModel.selectedCharacterWalks }, set: { appModel.selectedCharacterWalks = $0 }))
+            .font(.callout)
+            .help("When this character moves from one keyframe's spot to the next, it walks there, facing the way it goes")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -364,6 +403,17 @@ private struct JointEditor: View {
 
             ForEach(joint.axes) { axis in
                 AngleRow(joint: joint, axis: axis)
+            }
+
+            if let hand = Hand.allCases.first(where: { $0.wrist == joint }) {
+                Picker("Hand Shape", selection: Binding(
+                    get: { appModel.selectedCharacterPose?[hand] ?? .relaxed },
+                    set: { appModel.setHandShape($0, for: hand) })) {
+                    ForEach(HandShape.allCases) { shape in
+                        Label(shape.name, systemImage: shape.symbol).tag(shape)
+                    }
+                }
+                .pickerStyle(.menu)
             }
 
             if let limb = Limb(end: joint) {

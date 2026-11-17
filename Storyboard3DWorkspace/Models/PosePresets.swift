@@ -79,20 +79,20 @@ enum PosePreset: String, CaseIterable, Identifiable {
                 .rightHip: .init(bend: -25), .rightKnee: .init(bend: 65), .rightAnkle: .init(bend: -30),
                 .rightShoulder: .init(bend: 50, side: 6), .rightElbow: .init(bend: 95),
                 .leftShoulder: .init(bend: -40, side: 6), .leftElbow: .init(bend: 95),
-            ])
+            ], hands: [.left: .fist, .right: .fist])
         case .pointing:
             return CharacterPose([
                 .chest: .init(twist: -8),
                 .head: .init(twist: -10),
                 .rightShoulder: .init(bend: 85, side: 8), .rightWrist: .init(bend: -10),
                 .leftShoulder: .init(side: 4), .leftElbow: .init(bend: 8),
-            ])
+            ], hands: [.right: .point])
         case .waving:
             return CharacterPose([
                 .head: .init(side: -5),
                 .rightShoulder: .init(twist: -90, side: 95), .rightElbow: .init(bend: 95), .rightWrist: .init(side: 15),
                 .leftShoulder: .init(side: 4), .leftElbow: .init(bend: 6),
-            ])
+            ], hands: [.right: .open])
         case .reaching:
             return CharacterPose([
                 .spine: .init(bend: 10), .chest: .init(bend: 6), .head: .init(bend: -15),

@@ -33,6 +33,11 @@ final class KeyframeAnimator {
 
     /// Replaces the whole timeline (undo, or loading a saved project) without moving any
     /// objects: their poses are restored separately.
+    /// Characters that walk when they move between keyframes.
+    var walkers: Set<ObjectID> = [] {
+        didSet { if walkers != oldValue, !timeline.keyframes.isEmpty { applyPlayhead() } }
+    }
+
     func restore(_ keyframes: [Keyframe], selecting selectedID: Keyframe.ID?) {
         pause()
         timeline = KeyframeTimeline(keyframes: keyframes)
@@ -68,7 +73,8 @@ final class KeyframeAnimator {
         pause()
         let poses = scene.currentPoses()
         let characters = scene.currentCharacterPoses()
-        let keyframe: Keyframe
+        let held = scene.currentHolds()
+        var keyframe: Keyframe
         if let selected = selectedKeyframeID, let inserted = timeline.insert(poses, characters: characters, after: selected) {
             keyframe = inserted
         } else if let inserted = timeline.insert(poses, characters: characters, at: playhead) {
@@ -79,6 +85,8 @@ final class KeyframeAnimator {
         } else {
             keyframe = timeline.append(poses, characters: characters)
         }
+        timeline.setHeldProps(held, for: keyframe.id)
+        keyframe.heldProps = held
         selectedKeyframeID = keyframe.id
         playhead = keyframe.time
         return keyframe
@@ -93,21 +101,38 @@ final class KeyframeAnimator {
         guard !isPlaying else { return nil }
         let poses = scene.currentPoses()
         let characters = scene.currentCharacterPoses()
+        let held = scene.currentHolds()
         guard let keyframe = selectedKeyframe else {
             // What the timeline shows here, plus objects that aren't animated at all.
             let keyframed = timeline.keyframedObjectIDs
-            let expected = timeline.poses(at: playhead).merging(poses.filter { !keyframed.contains($0.key) }) { a, _ in a }
-            let expectedCharacters = timeline.characterPoses(at: playhead)
+            let expected = timeline.poses(at: playhead, walkers: walkers).merging(poses.filter { !keyframed.contains($0.key) }) { a, _ in a }
+            let expectedCharacters = timeline.characterPoses(at: playhead, walkers: walkers)
                 .merging(characters.filter { !keyframed.contains($0.key) }) { a, _ in a }
-            guard !KeyframeTimeline.posesMatch(expected, poses) || !CharacterPose.matches(expectedCharacters, characters),
+            let expectedHeld = timeline.heldProps(at: playhead).compactMapValues { $0 }
+            guard !KeyframeTimeline.posesMatch(expected, poses) || !CharacterPose.matches(expectedCharacters, characters)
+                    || Self.holdsDiffer(expectedHeld, held),
                   let inserted = timeline.insert(poses, characters: characters, at: playhead) else { return nil }
+            timeline.setHeldProps(held, for: inserted.id)
             selectedKeyframeID = inserted.id
             return inserted.id
         }
         guard !KeyframeTimeline.posesMatch(keyframe.poses, poses)
-                || !CharacterPose.matches(keyframe.characterPoses, characters) else { return nil }
+                || !CharacterPose.matches(keyframe.characterPoses, characters)
+                || Self.holdsDiffer(keyframe.heldProps, held) else { return nil }
         timeline.update(keyframe.id, with: poses, characters: characters)
+        timeline.setHeldProps(held, for: keyframe.id)
         return keyframe.id
+    }
+
+    /// Whether two sets of held objects differ in who holds what (grip changes within a
+    /// couple of millimeters don't count).
+    static func holdsDiffer(_ a: [ObjectID: Hold], _ b: [ObjectID: Hold]) -> Bool {
+        guard Set(a.keys) == Set(b.keys) else { return true }
+        return a.contains { id, hold in
+            guard let other = b[id] else { return true }
+            return hold.character != other.character || hold.hand != other.hand
+                || simd_distance(hold.offset.translation, other.offset.translation) > 0.002
+        }
     }
 
     func setNote(_ note: String, for id: Keyframe.ID) {
@@ -258,8 +283,8 @@ final class KeyframeAnimator {
     }
 
     private func applyPlayhead() {
-        scene.apply(timeline.poses(at: playhead), characterPoses: timeline.characterPoses(at: playhead),
-                    keyframedObjects: timeline.keyframedObjectIDs)
+        scene.apply(timeline.poses(at: playhead, walkers: walkers), characterPoses: timeline.characterPoses(at: playhead, walkers: walkers),
+                    keyframedObjects: timeline.keyframedObjectIDs, holds: timeline.heldProps(at: playhead))
     }
 }
 

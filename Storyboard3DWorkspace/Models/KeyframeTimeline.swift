@@ -22,6 +22,8 @@ struct Keyframe: Identifiable {
     /// Hold this keyframe until the next one, then cut, instead of easing between them.
     /// For storyboards made of distinct poses rather than smooth animation.
     var holds = false
+    /// Objects in a character's hand at this keyframe.
+    var heldProps: [ObjectID: Hold] = [:]
 }
 
 /// An ordered list of keyframes, each at its own time, with eased interpolation between them.
@@ -124,6 +126,11 @@ struct KeyframeTimeline {
         keyframes[index].characterPoses = characters
     }
 
+    mutating func setHeldProps(_ held: [ObjectID: Hold], for id: Keyframe.ID) {
+        guard let index = index(of: id) else { return }
+        keyframes[index].heldProps = held
+    }
+
     mutating func setHolds(_ holds: Bool, for id: Keyframe.ID) {
         guard let index = index(of: id) else { return }
         keyframes[index].holds = holds
@@ -200,21 +207,84 @@ struct KeyframeTimeline {
 
     /// The interpolated pose at `time` of every object visible then. Keyframed objects
     /// missing from the result are hidden at that time.
-    func poses(at time: TimeInterval) -> [ObjectID: Transform] {
+    /// - Parameter walkers: Characters that walk between keyframes; they turn to face where
+    ///   they're going while they move.
+    func poses(at time: TimeInterval, walkers: Set<ObjectID> = []) -> [ObjectID: Transform] {
         // The keyframe in effect: the last one at or before `time`, else the first.
         guard let governing = keyframes.last(where: { $0.time <= time + 1e-6 }) ?? keyframes.first else { return [:] }
 
         var result: [ObjectID: Transform] = [:]
         for objectID in governing.poses.keys {
             let track = keyframes.compactMap { keyframe in keyframe.poses[objectID].map { (keyframe.time, $0, keyframe.holds) } }
-            if let pose = Self.interpolate(track, at: time) { result[objectID] = pose }
+            guard var pose = Self.interpolate(track, at: time) else { continue }
+            if walkers.contains(objectID), let walk = walk(of: objectID, at: time) {
+                let facing = simd_quatf(from: [0, 0, 1], to: walk.heading)
+                pose.rotation = simd_slerp(pose.rotation, facing, walk.weight)
+            }
+            result[objectID] = pose
         }
+        return result
+    }
+
+    // MARK: Walking
+
+    /// A character partway through walking from one keyframe's spot to the next.
+    struct Walk {
+        /// Where in the stride it is, in radians: one full turn is a left and a right step.
+        var phase: Float
+        /// How strongly the walk shows: 0 at the keyframes, so their poses stay exact, rising
+        /// to 1 in between.
+        var weight: Float
+        /// The level direction of travel.
+        var heading: SIMD3<Float>
+    }
+
+    /// A left and a right step, at human scale in meters.
+    static let strideLength: Float = 1.3
+
+    /// The walk at `time`, if the object is moving across the ground between two keyframes.
+    func walk(of objectID: ObjectID, at time: TimeInterval) -> Walk? {
+        let track = keyframes.filter { $0.poses[objectID] != nil }
+        guard let next = track.firstIndex(where: { $0.time > time }), next > 0, !track[next - 1].holds,
+              let start = track[next - 1].poses[objectID], let end = track[next].poses[objectID] else { return nil }
+        var delta = end.translation - start.translation
+        delta.y = 0
+        let length = simd_length(delta)
+        // A centimeter at 1:35 is about a third of a meter: less than that is a shuffle, not a walk.
+        guard length > 0.01 * start.scale.x else { return nil }
+        let linear = Float((time - track[next - 1].time) / (track[next].time - track[next - 1].time))
+        let eased = linear * linear * (3 - 2 * linear)
+        let stride = Self.strideLength * RigLayout.miniatureScale * start.scale.x
+        return Walk(phase: length * eased / stride * 2 * .pi,
+                    weight: min(1, min(linear, 1 - linear) * 5),
+                    heading: delta / length)
+    }
+
+    /// A pose with a walking stride laid over it: legs swinging, knees bending as they pass,
+    /// arms swinging opposite.
+    static func walking(_ pose: CharacterPose, phase: Float, weight: Float) -> CharacterPose {
+        var result = pose
+        let swing = sin(phase)
+        func add(_ joint: Joint, bend: Float) {
+            var rotation = result[joint]
+            rotation.bend += bend * weight
+            result[joint] = rotation
+        }
+        add(.leftHip, bend: 24 * swing)
+        add(.rightHip, bend: -24 * swing)
+        add(.leftKnee, bend: 8 + 32 * max(0, cos(phase)))
+        add(.rightKnee, bend: 8 + 32 * max(0, -cos(phase)))
+        add(.leftShoulder, bend: -18 * swing)
+        add(.rightShoulder, bend: 18 * swing)
+        add(.leftElbow, bend: 14)
+        add(.rightElbow, bend: 14)
+        add(.spine, bend: 3)
         return result
     }
 
     /// Each visible character's body pose at `time`, blended between keyframes the same
     /// way as positions (and held, where a keyframe holds).
-    func characterPoses(at time: TimeInterval) -> [ObjectID: CharacterPose] {
+    func characterPoses(at time: TimeInterval, walkers: Set<ObjectID> = []) -> [ObjectID: CharacterPose] {
         guard let governing = keyframes.last(where: { $0.time <= time + 1e-6 }) ?? keyframes.first else { return [:] }
 
         var result: [ObjectID: CharacterPose] = [:]
@@ -223,18 +293,48 @@ struct KeyframeTimeline {
                 keyframe.characterPoses[objectID].map { (time: keyframe.time, pose: $0, holds: keyframe.holds) }
             }
             guard let (from, to, t) = Self.segment(of: track.map { ($0.time, $0.holds) }, at: time) else { continue }
-            result[objectID] = track[from].pose.interpolated(to: track[to].pose, t)
+            var pose = track[from].pose.interpolated(to: track[to].pose, t)
+            if walkers.contains(objectID), let walk = walk(of: objectID, at: time) {
+                pose = Self.walking(pose, phase: walk.phase, weight: walk.weight)
+            }
+            result[objectID] = pose
         }
         return result
     }
 
-    /// Removes a deleted object from every keyframe.
+    /// Whether each keyframed object is in a hand at `time`: its hold, or nil when it's free.
+    ///
+    /// An object follows the hand through a stretch only when the keyframes at both ends
+    /// have it in the same hand. Held at one end and free at the other, it moves between
+    /// where it was put down and where the hand had it, like picking it up or setting it down.
+    func heldProps(at time: TimeInterval) -> [ObjectID: Hold?] {
+        guard let governing = keyframes.last(where: { $0.time <= time + 1e-6 }) ?? keyframes.first else { return [:] }
+        var result: [ObjectID: Hold?] = [:]
+        for objectID in governing.poses.keys {
+            let track = keyframes.filter { $0.poses[objectID] != nil }
+            guard let (from, to, t) = Self.segment(of: track.map { ($0.time, $0.holds) }, at: time) else { continue }
+            let start = track[from].heldProps[objectID]
+            if from == to || t < 1e-6 {
+                result[objectID] = start
+            } else if let start, let end = track[to].heldProps[objectID],
+                      start.character == end.character, start.hand == end.hand {
+                result[objectID] = start
+            } else {
+                result[objectID] = .some(nil)
+            }
+        }
+        return result
+    }
+
+    /// Removes a deleted object from every keyframe, along with anything it was holding.
     /// - Returns: The keyframes that contained it.
     mutating func removeObject(_ objectID: ObjectID) -> [Keyframe.ID] {
         var changed: [Keyframe.ID] = []
         for index in keyframes.indices where keyframes[index].poses[objectID] != nil {
             keyframes[index].poses[objectID] = nil
             keyframes[index].characterPoses[objectID] = nil
+            keyframes[index].heldProps[objectID] = nil
+            keyframes[index].heldProps = keyframes[index].heldProps.filter { $0.value.character != objectID }
             changed.append(keyframes[index].id)
         }
         return changed

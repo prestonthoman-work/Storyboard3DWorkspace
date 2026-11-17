@@ -7,7 +7,7 @@ import RealityKit
 import simd
 
 /// A character's hand.
-enum Hand: String, Codable, CaseIterable, Identifiable {
+enum Hand: String, Codable, CaseIterable, Identifiable, CodingKeyRepresentable {
     case left, right
 
     var id: String { rawValue }
@@ -85,5 +85,34 @@ enum HeldProps {
     /// The offset that keeps the object exactly where it is now, relative to the wrist.
     static func offset(of prop: Entity, from wrist: Entity) -> Transform {
         Transform(matrix: wrist.transformMatrix(relativeTo: nil).inverse * prop.transformMatrix(relativeTo: nil))
+    }
+}
+
+extension WorkspaceScene {
+    /// What's holding the object, if anything.
+    func hold(of object: Entity) -> Hold? {
+        object.components[HeldPropComponent.self]?.hold
+    }
+
+    /// Every held object, by object.
+    func currentHolds() -> [ObjectID: Hold] {
+        Dictionary(uniqueKeysWithValues: objects.compactMap { object in
+            guard let id = objectID(of: object), let hold = hold(of: object) else { return nil }
+            return (id, hold)
+        })
+    }
+
+    /// Puts the object in a hand (out of gravity's way), or frees it.
+    func setHold(_ hold: Hold?, on object: Entity) {
+        var gravity = object.components[ObjectGravityComponent.self] ?? ObjectGravityComponent()
+        gravity.fallSpeed = 0
+        gravity.isAttached = hold != nil
+        object.components.set(gravity)
+        if let hold {
+            object.components.set(HeldPropComponent(hold: hold))
+            HeldProps.attach(object)
+        } else {
+            object.components.remove(HeldPropComponent.self)
+        }
     }
 }

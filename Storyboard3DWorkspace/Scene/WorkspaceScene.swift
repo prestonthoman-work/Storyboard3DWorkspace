@@ -463,8 +463,9 @@ final class WorkspaceScene {
     /// Poses objects for a moment in the animation. Keyframed objects without a pose are
     /// hidden; objects that aren't in any keyframe are left alone. Characters with an entry
     /// in `characterPoses` also take that body pose.
+    /// - Parameter holds: For objects the timeline decides, whether each is in a hand.
     func apply(_ poses: [ObjectID: Transform], characterPoses: [ObjectID: CharacterPose] = [:],
-               keyframedObjects: Set<ObjectID>) {
+               keyframedObjects: Set<ObjectID>, holds: [ObjectID: Hold?] = [:]) {
         for object in objects {
             guard let id = objectID(of: object) else { continue }
             if let pose = poses[id] {
@@ -478,16 +479,23 @@ final class WorkspaceScene {
                 setCharacterPose(characterPose, on: object)
             }
         }
+        // After every body is posed, so held objects go to where the hands are now.
+        for object in objects {
+            guard let id = objectID(of: object), let hold = holds[id], self.hold(of: object) != hold else { continue }
+            setHold(hold, on: object)
+        }
+        HeldProps.attachAll(in: objectsContainer)
     }
 
     /// A render-ready copy of the scene posed at a keyframe. The live objects are posed,
     /// copied, and put back within the same moment, so nothing visibly moves.
     func snapshot(at poses: [ObjectID: Transform], characterPoses: [ObjectID: CharacterPose] = [:],
-                  keyframedObjects: Set<ObjectID>) -> Entity {
-        let saved = objects.map { ($0, $0.transform, $0.isEnabled, characterPose(of: $0)) }
-        apply(poses, characterPoses: characterPoses, keyframedObjects: keyframedObjects)
+                  keyframedObjects: Set<ObjectID>, holds: [ObjectID: Hold?] = [:]) -> Entity {
+        let saved = objects.map { ($0, $0.transform, $0.isEnabled, characterPose(of: $0), hold(of: $0)) }
+        apply(poses, characterPoses: characterPoses, keyframedObjects: keyframedObjects, holds: holds)
         let snapshot = CompositionRenderer.snapshot(of: baseAnchor)
-        for (object, transform, isEnabled, characterPose) in saved {
+        for (object, transform, isEnabled, characterPose, hold) in saved {
+            if self.hold(of: object) != hold { setHold(hold, on: object) }
             object.transform = transform
             object.isEnabled = isEnabled
             if let characterPose, characterPoses[objectID(of: object) ?? UUID()] != nil {

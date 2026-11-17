@@ -78,6 +78,7 @@ struct CaptureControls: View {
 /// The capture camera's settings: focal length, frame shape, depth of field, and film grade.
 private struct CameraSettings: View {
     @Environment(AppModel.self) private var appModel
+    @State private var preview: UIImage?
 
     /// The focal-length slider moves on a log scale, so wide lenses (where a few millimeters
     /// matter a lot) get as much room as telephoto ones.
@@ -154,7 +155,7 @@ private struct CameraSettings: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    Text("Shows in photos and slideshows, not in the viewfinder. The animatic stays sharp so it exports quickly.")
+                    Text("Shows in photos and slideshows, not in the live viewfinder. Turn it on for the animatic in Export.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -162,6 +163,28 @@ private struct CameraSettings: View {
             }
 
             Toggle("Film Grade", systemImage: "film", isOn: $appModel.captureLook.isFilmGraded)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    Task { preview = await appModel.renderCameraPreview() }
+                } label: {
+                    if appModel.isRenderingPreview {
+                        Label("Rendering…", systemImage: "hourglass")
+                    } else {
+                        Label(preview == nil ? "Preview Shot" : "Update Preview", systemImage: "eye")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(appModel.isRenderingPreview || appModel.background == nil)
+                .help("A quick render from where you stand, with these settings")
+                if let preview {
+                    Image(uiImage: preview)
+                        .resizable()
+                        .aspectRatio(16 / 9, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .accessibilityLabel("Preview of the shot")
+                }
+            }
         }
         .padding(24)
         .frame(width: 400)

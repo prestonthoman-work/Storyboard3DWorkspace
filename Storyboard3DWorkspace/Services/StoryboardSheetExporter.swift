@@ -14,6 +14,8 @@ enum StoryboardSheetExporter {
         let image: UIImage?
         let note: String
         var shotType: ShotType?
+        /// The photo's camera settings, such as "35 mm · f/2 · 2.39:1".
+        var camera: String?
     }
 
     /// How many shots fit on a page.
@@ -37,7 +39,10 @@ enum StoryboardSheetExporter {
     private static let gutter: CGFloat = 18
     private static let headerHeight: CGFloat = 52
 
-    static func export(title: String, panels: [Panel], layout: Layout, includeNotes: Bool, to url: URL) throws {
+    /// - Parameter imageAspect: Width ÷ height of each panel's picture: 16:9, or the frame
+    ///   shape when exports are cut to it.
+    static func export(title: String, panels: [Panel], layout: Layout, includeNotes: Bool,
+                       imageAspect: CGFloat = 16 / 9, to url: URL) throws {
         let perPage = layout.rawValue
         let pageCount = max(1, Int((Double(panels.count) / Double(perPage)).rounded(.up)))
         let date = Date.now.formatted(date: .abbreviated, time: .omitted)
@@ -50,22 +55,31 @@ enum StoryboardSheetExporter {
                 drawHeader(title: title, detail: "\(date) · \(shots)", page: pageIndex + 1, of: pageCount)
                 let pagePanels = panels.dropFirst(pageIndex * perPage).prefix(perPage)
                 for (slot, panel) in pagePanels.enumerated() {
-                    draw(panel, in: cell(at: slot, layout: layout, includeNotes: includeNotes),
-                         includeNotes: includeNotes, compact: layout == .twelve)
+                    draw(panel, in: cell(at: slot, layout: layout, includeNotes: includeNotes, imageAspect: imageAspect),
+                         imageAspect: imageAspect, includeNotes: includeNotes, compact: layout == .twelve)
                 }
             }
         }
     }
 
-    private static func cell(at slot: Int, layout: Layout, includeNotes: Bool) -> CGRect {
+    private static func cell(at slot: Int, layout: Layout, includeNotes: Bool, imageAspect: CGFloat) -> CGRect {
         let width = (page.width - margin * 2 - gutter * CGFloat(layout.columns - 1)) / CGFloat(layout.columns)
-        let imageHeight = width * 9 / 16
+        let imageHeight = imageSize(columnWidth: width, layout: layout, includeNotes: includeNotes, aspect: imageAspect).height
         let height = imageHeight + layout.captionHeight(includingNotes: includeNotes)
         let column = slot % layout.columns
         let row = slot / layout.columns
         return CGRect(x: margin + CGFloat(column) * (width + gutter),
                       y: margin + headerHeight + CGFloat(row) * (height + gutter),
                       width: width, height: height)
+    }
+
+    /// A panel's picture: as wide as its column, unless that makes the rows too tall for the
+    /// page (tall frame shapes), in which case as tall as fits.
+    private static func imageSize(columnWidth: CGFloat, layout: Layout, includeNotes: Bool, aspect: CGFloat) -> CGSize {
+        let rowsHeight = page.height - margin * 2 - headerHeight - gutter * CGFloat(layout.rows - 1)
+        let maxImageHeight = rowsHeight / CGFloat(layout.rows) - layout.captionHeight(includingNotes: includeNotes)
+        let height = min(columnWidth / aspect, maxImageHeight)
+        return CGSize(width: height * aspect, height: height)
     }
 
     private static func drawHeader(title: String, detail: String, page pageNumber: Int, of pageCount: Int) {
@@ -85,8 +99,11 @@ enum StoryboardSheetExporter {
         pageLabel.draw(at: CGPoint(x: page.width - margin - size.width, y: margin + 27), withAttributes: detailAttributes)
     }
 
-    private static func draw(_ panel: Panel, in cell: CGRect, includeNotes: Bool, compact: Bool) {
-        let frame = CGRect(x: cell.minX, y: cell.minY, width: cell.width, height: cell.width * 9 / 16)
+    private static func draw(_ panel: Panel, in cell: CGRect, imageAspect: CGFloat, includeNotes: Bool, compact: Bool) {
+        let imageHeight = min(cell.width / imageAspect, cell.height)
+        let imageWidth = min(cell.width, imageHeight * imageAspect)
+        let frame = CGRect(x: cell.minX + (cell.width - imageWidth) / 2, y: cell.minY,
+                           width: imageWidth, height: imageWidth / imageAspect)
         let context = UIGraphicsGetCurrentContext()
 
         if let image = panel.image {
@@ -117,6 +134,15 @@ enum StoryboardSheetExporter {
         number.draw(at: CGPoint(x: frame.minX, y: frame.maxY + 6), withAttributes: [
             .font: UIFont.systemFont(ofSize: compact ? 9 : 11, weight: .semibold), .foregroundColor: UIColor.black
         ])
+        if let camera = panel.camera {
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedDigitSystemFont(ofSize: compact ? 8 : 9, weight: .regular),
+                .foregroundColor: UIColor.darkGray
+            ]
+            let text = camera as NSString
+            let size = text.size(withAttributes: attributes)
+            text.draw(at: CGPoint(x: frame.maxX - size.width, y: frame.maxY + (compact ? 7 : 8)), withAttributes: attributes)
+        }
         guard includeNotes else { return }
 
         let paragraph = NSMutableParagraphStyle()

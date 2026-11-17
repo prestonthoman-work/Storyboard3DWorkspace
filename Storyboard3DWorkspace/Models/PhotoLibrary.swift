@@ -202,3 +202,14 @@ final class PhotoLibrary {
         }
     }
 }
+
+extension CapturedPhoto {
+    /// The camera settings it was taken with, such as "35 mm · f/2 · 2.39:1", for captions
+    /// and the storyboard sheet.
+    var cameraDetails: String {
+        var parts = [lens.label]
+        if let depthOfField = look.depthOfField { parts.append(depthOfField.label) }
+        parts.append(look.format.label)
+        return parts.joined(separator: " · ")
+    }
+}

@@ -26,6 +26,11 @@ struct JointComponent: Component {
 
 /// Marks a piece of a character's body, and the joint that moves it, so tapping it can
 /// select that joint.
+/// Marks one hand shape's geometry. Only the shape the pose asks for is shown.
+struct HandShapePartComponent: Component {
+    var shape: HandShape
+}
+
 struct BodyPartComponent: Component {
     var joint: Joint
 }
@@ -120,7 +125,7 @@ enum CharacterBuilder {
             let length = layout.forearm
             return [ball(0.046 * build), segment([0.072 * build, length - 0.04, 0.072 * build], at: [0, -length / 2, 0], radius: 0.03)]
         case .leftWrist, .rightWrist:
-            return [ball(0.036 * build), segment([0.04, 0.16, 0.09], at: [0, -0.1, 0.005], radius: 0.018)]
+            return [ball(0.036 * build)] + handShapes(inward: joint == .leftWrist ? -1 : 1, body: body)
         case .leftHip, .rightHip:
             let length = layout.thigh
             return [ball(0.068 * build), segment([0.13 * build, length - 0.06, 0.13 * build], at: [0, -length / 2, 0], radius: 0.05)]
@@ -131,6 +136,41 @@ enum CharacterBuilder {
             let height = layout.ankleHeight
             return [ball(0.045 * build), segment([0.10 * build, height, 0.25], at: [0, -height / 2, 0.06], radius: 0.03)]
         }
+    }
+
+    /// Every hand shape's geometry, each tagged with its shape. The hand hangs down the
+    /// wrist's -Y with the palm facing the body (`inward` is that direction along x) and the
+    /// thumb forward (+z).
+    private static func handShapes(inward: Float, body: UIColor) -> [ModelEntity] {
+        func part(_ shape: HandShape, _ size: SIMD3<Float>, at position: SIMD3<Float>, radius: Float = 0.012,
+                  turn: simd_quatf? = nil) -> ModelEntity {
+            let entity = LowPoly.box(size, body, at: position, cornerRadius: radius, finish: .satin)
+            if let turn { entity.orientation = turn }
+            entity.components.set(HandShapePartComponent(shape: shape))
+            return entity
+        }
+        let fingerZ: [Float] = [-0.033, -0.011, 0.011, 0.033]
+        var parts: [ModelEntity] = [
+            // Relaxed: one soft block, fingers together.
+            part(.relaxed, [0.04, 0.16, 0.09], at: [0, -0.1, 0.005], radius: 0.018),
+            // Open: a flat palm with spread fingers and the thumb out.
+            part(.open, [0.03, 0.1, 0.095], at: [0, -0.07, 0.005]),
+            part(.open, [0.022, 0.065, 0.024], at: [0, -0.06, 0.07], radius: 0.009,
+                 turn: simd_quatf(angle: -0.6, axis: [1, 0, 0])),
+            // Fist: a compact block.
+            part(.fist, [0.06, 0.09, 0.095], at: [inward * 0.008, -0.065, 0.005], radius: 0.022),
+            // Pointing: a fist with the index finger out.
+            part(.point, [0.06, 0.09, 0.095], at: [inward * 0.008, -0.065, 0.005], radius: 0.022),
+            part(.point, [0.022, 0.085, 0.022], at: [0, -0.15, 0.033], radius: 0.009),
+            // Gripping: palm with the fingers curled round toward it, as if holding a handle.
+            part(.grip, [0.03, 0.1, 0.09], at: [-inward * 0.006, -0.07, 0.005]),
+            part(.grip, [0.045, 0.03, 0.09], at: [inward * 0.016, -0.13, 0.005], radius: 0.01),
+            part(.grip, [0.022, 0.05, 0.024], at: [inward * 0.02, -0.06, 0.06], radius: 0.009),
+        ]
+        for z in fingerZ {
+            parts.append(part(.open, [0.02, 0.075, 0.017], at: [0, -0.155, z * 1.25], radius: 0.008))
+        }
+        return parts
     }
 
     private static func shade(_ color: UIColor, _ amount: CGFloat) -> UIColor {
@@ -168,6 +208,14 @@ enum CharacterBuilder {
         for (joint, entity) in joints {
             entity.orientation = CharacterKinematics.rotation(pose[joint], for: joint)
         }
+        for hand in Hand.allCases {
+            guard let wrist = joints[hand.wrist] else { continue }
+            for part in wrist.children {
+                if let shape = part.components[HandShapePartComponent.self]?.shape {
+                    part.isEnabled = shape == pose[hand]
+                }
+            }
+        }
         guard grounded, let pelvis = joints[.pelvis], let scaler = pelvis.parent else { return }
         pelvis.position = RigLayout(proportions: rig.proportions).offset(of: .pelvis)
         if let lowest = lowestPoint(of: content, in: scaler) {
@@ -179,6 +227,7 @@ enum CharacterBuilder {
     private static func lowestPoint(of content: Entity, in space: Entity) -> Float? {
         var lowest: Float?
         func visit(_ entity: Entity) {
+            guard entity.isEnabled else { return }
             if entity.components.has(BodyPartComponent.self) {
                 let bounds = entity.visualBounds(relativeTo: space)
                 if !bounds.isEmpty { lowest = min(lowest ?? .infinity, bounds.min.y) }

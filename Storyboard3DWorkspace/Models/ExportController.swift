@@ -48,6 +48,17 @@ final class ExportController {
         StoryboardSheetExporter.Layout(rawValue: UserDefaults.standard.integer(forKey: "sheetLayout")) ?? .six {
         didSet { UserDefaults.standard.set(sheetLayout.rawValue, forKey: "sheetLayout") }
     }
+    /// Cut every export to the camera's frame shape (a real 9:16 vertical video, say)
+    /// instead of 16:9 with black bars.
+    var cropsToFrameShape: Bool = UserDefaults.standard.bool(forKey: "cropsToFrameShape") {
+        didSet { UserDefaults.standard.set(cropsToFrameShape, forKey: "cropsToFrameShape") }
+    }
+
+    /// Lens blur in the animatic, when the camera has depth of field on. Fewer renders per
+    /// frame than a photo, but still several times slower to export.
+    var animaticDepthOfField: Bool = UserDefaults.standard.bool(forKey: "animaticDepthOfField") {
+        didSet { UserDefaults.standard.set(animaticDepthOfField, forKey: "animaticDepthOfField") }
+    }
     var sheetIncludesNotes: Bool = UserDefaults.standard.object(forKey: "sheetIncludesNotes") as? Bool ?? true {
         didSet { UserDefaults.standard.set(sheetIncludesNotes, forKey: "sheetIncludesNotes") }
     }
@@ -76,15 +87,18 @@ final class ExportController {
 
     /// Exports an MP4 of each keyframe's primary photo, in timeline order. Keyframes
     /// without a photo are skipped; other photos taken at a keyframe aren't included.
-    func exportSlideshow(keyframes: [Keyframe], photos: PhotoLibrary, title: String) async {
+    /// - Parameter format: The project's frame shape, used when exports are cut to it.
+    func exportSlideshow(keyframes: [Keyframe], photos: PhotoLibrary, title: String, format: FrameFormat = .widescreen) async {
         guard !isExporting else { return }
         let captions = slideshowCaptions
+        let crops = cropsToFrameShape
         let slides: [CGImage] = keyframes.enumerated().compactMap { index, keyframe in
-            guard let photo = photos.primaryPhoto(for: keyframe.id), let image = photos.image(for: photo)?.cgImage
+            guard let photo = photos.primaryPhoto(for: keyframe.id), var image = photos.image(for: photo)?.cgImage
             else { return nil }
+            if crops { image = Self.picture(of: image, format: photo.look.format) }
             guard captions else { return image }
             return SlideCaption.burn(SlideCaption.caption(number: index + 1, shotType: keyframe.shotType,
-                                                          note: keyframe.note), into: image)
+                                                          note: keyframe.note, camera: photo.cameraDetails), into: image)
         }
         guard !slides.isEmpty else { return }
 
@@ -96,9 +110,10 @@ final class ExportController {
         let url = Self.exportURL(title: title, suffix: "Slideshow", fileExtension: "mp4")
         let seconds = slideshowSecondsPerShot
         let crossfade = slideshowCrossfade
+        let size = crops ? format.videoSize : (SlideshowExporter.width, SlideshowExporter.height)
         do {
             try await Task.detached(priority: .userInitiated) {
-                try await SlideshowExporter.export(slides, secondsPerSlide: seconds, crossfade: crossfade, to: url)
+                try await SlideshowExporter.export(slides, secondsPerSlide: seconds, crossfade: crossfade, size: size, to: url)
             }.value
             exportedFile = ExportedFile(url: url, shareTitle: "Share Slideshow")
         } catch {
@@ -118,6 +133,7 @@ final class ExportController {
         let lighting: LightingPreset
         let look: CaptureLook
         let title: String
+        var walkers: Set<ObjectID> = []
     }
 
     /// Starts rendering the animation as video: objects move between keyframes while the
@@ -149,21 +165,29 @@ final class ExportController {
         let frameCount = Int((timeline.duration * Double(fps)).rounded(.up)) + 1
         let url = Self.exportURL(title: input.title, suffix: "Animatic", fileExtension: "mp4")
         var writer: VideoStreamWriter?
+        // Cut to the frame shape: render at full photo size so the picture inside the bars
+        // keeps its detail, then crop each frame.
+        let crops = cropsToFrameShape && input.look.format != .widescreen
+        let renderSize = crops ? (FrameFormat.captureWidth, FrameFormat.captureHeight)
+                               : (SlideshowExporter.width, SlideshowExporter.height)
         do {
             let sequence = try await CompositionRenderer.Sequence(
                 backdrop: workspace.backdrop, backdropPose: input.backdropPose, background: input.background,
                 lighting: input.lighting, look: input.look,
-                width: SlideshowExporter.width, height: SlideshowExporter.height)
-            writer = try VideoStreamWriter(url: url, framesPerSecond: fps)
+                width: renderSize.0, height: renderSize.1)
+            writer = try VideoStreamWriter(url: url, framesPerSecond: fps,
+                                           size: crops ? input.look.format.videoSize : (SlideshowExporter.width, SlideshowExporter.height))
 
             var lastImage: CGImage?
             for index in 0..<frameCount {
                 try Task.checkCancellation()
                 let time = min(Double(index) / Double(fps), timeline.duration)
                 guard let frame = input.cameraPath.frame(at: time) else { continue }
-                let snapshot = workspace.snapshot(at: timeline.poses(at: time), characterPoses: timeline.characterPoses(at: time),
-                                                  keyframedObjects: keyframed)
-                let image = try await sequence.render(snapshot: snapshot, frame: frame)
+                let snapshot = workspace.snapshot(at: timeline.poses(at: time, walkers: input.walkers),
+                                                  characterPoses: timeline.characterPoses(at: time, walkers: input.walkers),
+                                                  keyframedObjects: keyframed, holds: timeline.heldProps(at: time))
+                var image = try await sequence.render(snapshot: snapshot, frame: frame)
+                if crops { image = Self.picture(of: image, format: input.look.format) }
                 try await writer?.append(image)
                 lastImage = image
                 animaticProgress = Double(index + 1) / Double(frameCount)
@@ -184,26 +208,94 @@ final class ExportController {
 
     /// Exports a printable PDF: one numbered panel per keyframe with its primary photo
     /// (or an empty frame) and its notes.
-    func exportStoryboardSheet(keyframes: [Keyframe], photos: PhotoLibrary, title: String) {
+    func exportStoryboardSheet(keyframes: [Keyframe], photos: PhotoLibrary, title: String, format: FrameFormat = .widescreen) {
         guard !isExporting, !keyframes.isEmpty else { return }
         exportError = nil
         exportedFile = nil
 
+        let crops = cropsToFrameShape
         let panels = keyframes.enumerated().map { index, keyframe in
-            StoryboardSheetExporter.Panel(
+            let photo = photos.primaryPhoto(for: keyframe.id)
+            return StoryboardSheetExporter.Panel(
                 number: index + 1,
-                image: photos.primaryPhoto(for: keyframe.id).flatMap { photos.image(for: $0) },
+                image: photo.flatMap { photo in
+                    photos.image(for: photo).map { image in
+                        guard crops, let cgImage = image.cgImage else { return image }
+                        return UIImage(cgImage: Self.picture(of: cgImage, format: photo.look.format))
+                    }
+                },
                 note: keyframe.note,
-                shotType: keyframe.shotType
+                shotType: keyframe.shotType,
+                camera: photo?.cameraDetails
             )
         }
         let url = Self.exportURL(title: title, suffix: "Storyboard", fileExtension: "pdf")
         do {
             try StoryboardSheetExporter.export(title: title, panels: panels, layout: sheetLayout,
-                                               includeNotes: sheetIncludesNotes, to: url)
+                                               includeNotes: sheetIncludesNotes,
+                                               imageAspect: crops ? CGFloat(format.aspect) : 16 / 9, to: url)
             exportedFile = ExportedFile(url: url, shareTitle: "Share Storyboard Sheet")
         } catch {
             exportError = "The storyboard sheet couldn't be created."
+        }
+    }
+
+    /// The picture inside an image's bars, for exports cut to the frame shape.
+    static func picture(of image: CGImage, format: FrameFormat) -> CGImage {
+        guard format != .widescreen else { return image }
+        return image.cropping(to: format.pictureRect(width: image.width, height: image.height)) ?? image
+    }
+
+    // MARK: Shot list
+
+    /// One row per keyframe for a shot list or schedule: shot number, time, shot type,
+    /// notes, the primary photo's camera settings and lighting, and who's in the shot.
+    static func shotListCSV(keyframes: [Keyframe], photos: PhotoLibrary, objectNames: [ObjectID: String],
+                            characterIDs: Set<ObjectID>) -> String {
+        let header = ["Shot", "Time (s)", "Shot Type", "Notes", "Lens", "Aperture", "Frame", "Lighting",
+                      "Characters", "Objects", "Photo"]
+        let rows = keyframes.enumerated().map { index, keyframe -> [String] in
+            let photo = photos.primaryPhoto(for: keyframe.id)
+            let inShot = keyframe.poses.keys.compactMap { id in objectNames[id].map { (id, $0) } }
+                .sorted { $0.1.localizedStandardCompare($1.1) == .orderedAscending }
+            return [
+                String(index + 1),
+                keyframe.time.formatted(.number.precision(.fractionLength(1))),
+                keyframe.shotType?.name ?? "",
+                keyframe.note.trimmingCharacters(in: .whitespacesAndNewlines),
+                photo?.lens.label ?? "",
+                photo?.look.depthOfField?.label ?? "",
+                photo.map { "\($0.look.format.name) \($0.look.format.label)" } ?? "",
+                photo?.lighting.name ?? "",
+                inShot.filter { characterIDs.contains($0.0) }.map(\.1).joined(separator: ", "),
+                inShot.filter { !characterIDs.contains($0.0) }.map(\.1).joined(separator: ", "),
+                photo == nil ? "No" : "Yes",
+            ]
+        }
+        return ([header] + rows).map { $0.map(csvField).joined(separator: ",") }.joined(separator: "\r\n") + "\r\n"
+    }
+
+    /// A CSV field, quoted when it holds a comma, quote, or line break.
+    private static func csvField(_ value: String) -> String {
+        guard value.contains(where: { $0 == "," || $0 == "\"" || $0.isNewline }) else { return value }
+        return "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    }
+
+    /// Exports the shot list as a CSV file that opens in Numbers, Excel, or Google Sheets.
+    func exportShotList(keyframes: [Keyframe], photos: PhotoLibrary, objectNames: [ObjectID: String],
+                        characterIDs: Set<ObjectID>, title: String) {
+        guard !isExporting, !keyframes.isEmpty else { return }
+        exportError = nil
+        exportedFile = nil
+        let url = Self.exportURL(title: title, suffix: "Shot List", fileExtension: "csv")
+        do {
+            let text = Self.shotListCSV(keyframes: keyframes, photos: photos, objectNames: objectNames,
+                                        characterIDs: characterIDs)
+            // A byte-order mark so spreadsheet apps read names with accents correctly.
+            try Data(("\u{FEFF}" + text).utf8).write(to: url, options: .atomic)
+            exportedFile = ExportedFile(url: url, shareTitle: "Share Shot List")
+        } catch {
+            exportError = "The shot list couldn't be created. \(error.localizedDescription)"
         }
     }
 

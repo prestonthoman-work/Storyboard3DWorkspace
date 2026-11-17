@@ -238,21 +238,44 @@ struct JointRotation: Codable, Equatable {
 /// direct route, without the sudden flips that interpolating raw rotations can produce.
 struct CharacterPose: Codable, Equatable {
     private(set) var rotations: [Joint: JointRotation] = [:]
+    /// Each hand's shape. Hands left out are relaxed.
+    private(set) var hands: [Hand: HandShape] = [:]
 
     static let neutral = CharacterPose()
 
-    init(_ rotations: [Joint: JointRotation] = [:]) {
+    init(_ rotations: [Joint: JointRotation] = [:], hands: [Hand: HandShape] = [:]) {
         for (joint, rotation) in rotations { self[joint] = rotation }
+        for (hand, shape) in hands { self[hand] = shape }
     }
 
+    private enum CodingKeys: String, CodingKey { case joints, hands }
+
+    /// Poses with relaxed hands save as just their joint angles, as they always have; poses
+    /// with hand shapes save the angles and the shapes side by side.
     init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        self.init(try container.decode([Joint: JointRotation].self))
+        if let joints = try? decoder.singleValueContainer().decode([Joint: JointRotation].self) {
+            self.init(joints)
+            return
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(try container.decode([Joint: JointRotation].self, forKey: .joints),
+                  hands: try container.decodeIfPresent([Hand: HandShape].self, forKey: .hands) ?? [:])
     }
 
     func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rotations)
+        if hands.isEmpty {
+            var container = encoder.singleValueContainer()
+            try container.encode(rotations)
+        } else {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(rotations, forKey: .joints)
+            try container.encode(hands, forKey: .hands)
+        }
+    }
+
+    subscript(hand: Hand) -> HandShape {
+        get { hands[hand] ?? .relaxed }
+        set { hands[hand] = newValue == .relaxed ? nil : newValue }
     }
 
     subscript(joint: Joint) -> JointRotation {
@@ -263,7 +286,7 @@ struct CharacterPose: Codable, Equatable {
         }
     }
 
-    var isNeutral: Bool { rotations.isEmpty }
+    var isNeutral: Bool { rotations.isEmpty && hands.isEmpty }
 
     /// The same pose with left and right swapped, as if seen in a mirror: a right-hand wave
     /// becomes a left-hand wave, and turning left becomes turning right.
@@ -281,6 +304,8 @@ struct CharacterPose: Codable, Equatable {
                 result[joint.mirror] = rotation
             }
         }
+        result[.left] = self[.right]
+        result[.right] = self[.left]
         return result
     }
 
@@ -293,11 +318,16 @@ struct CharacterPose: Codable, Equatable {
                                           twist: a.twist + (b.twist - a.twist) * t,
                                           side: a.side + (b.side - a.side) * t)
         }
+        // A hand changes shape halfway between the two poses.
+        for hand in Hand.allCases {
+            result[hand] = t < 0.5 ? self[hand] : other[hand]
+        }
         return result
     }
 
     /// True when every joint is within `tolerance` degrees of the other pose.
     func matches(_ other: CharacterPose, tolerance: Float = 0.5) -> Bool {
+        guard hands == other.hands else { return false }
         for joint in Set(rotations.keys).union(other.rotations.keys) {
             let a = self[joint], b = other[joint]
             if abs(a.bend - b.bend) > tolerance || abs(a.twist - b.twist) > tolerance || abs(a.side - b.side) > tolerance {
@@ -715,5 +745,35 @@ enum SeatedLegs {
             result = LimbIK.solve(limb, reaching: target, bendDirection: 0, pose: result, layout: layout)
         }
         return result
+    }
+}
+
+// MARK: Hands
+
+/// What a hand is doing: its fingers' shape. Hands with fingers make gestures and held
+/// objects read clearly.
+enum HandShape: String, Codable, CaseIterable, Identifiable, CodingKeyRepresentable {
+    case relaxed, open, fist, point, grip
+
+    var id: String { rawValue }
+
+    var name: String {
+        switch self {
+        case .relaxed: "Relaxed"
+        case .open: "Open"
+        case .fist: "Fist"
+        case .point: "Pointing"
+        case .grip: "Gripping"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .relaxed: "hand.raised"
+        case .open: "hand.raised.fingers.spread"
+        case .fist: "hand.raised.fill"
+        case .point: "hand.point.up.left"
+        case .grip: "hand.draw"
+        }
     }
 }

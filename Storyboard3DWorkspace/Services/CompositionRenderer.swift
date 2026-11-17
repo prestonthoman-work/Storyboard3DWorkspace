@@ -5,6 +5,7 @@
 
 import Accelerate
 import CoreGraphics
+import CoreImage
 import Metal
 import RealityKit
 #if canImport(UIKit)
@@ -38,6 +39,9 @@ final class CompositionRenderer {
 
     static let outputWidth = 2560
     static let outputHeight = 1440
+    /// The quick preview in the camera settings.
+    static let previewWidth = 640
+    static let previewHeight = 360
 
     /// - Parameters:
     ///   - scene: The base with its objects. Rendered at its current world pose.
@@ -57,7 +61,9 @@ final class CompositionRenderer {
     /// interaction-only pieces. Taking it is instant, so the live scene can be posed,
     /// copied, and put back before anything is drawn.
     static func snapshot(of scene: Entity) -> Entity {
-        // Held objects follow their hands every frame; make sure they're there for this pose.
+        // Heads that follow a target, and held objects that follow hands, update every frame;
+        // make sure they're in place for this pose (heads first, since hands don't depend on them).
+        LookTracking.aimAll(in: scene)
         HeldProps.attachAll(in: scene)
         let subject = scene.clone(recursive: true)
         subject.findEntity(named: WorkspaceScene.selectionIndicatorName)?.removeFromParent()
@@ -70,9 +76,13 @@ final class CompositionRenderer {
     /// - Parameters:
     ///   - snapshot: From `snapshot(of:)`. Not modified, so it can be rendered again.
     ///   - backdropPose: Where to put the backdrop; nil uses the live backdrop's position.
+    ///   - width: Output width in pixels; the preview uses a smaller size.
+    ///   - height: Output height in pixels.
     func render(snapshot: Entity, backdrop: ModelEntity, backdropPose: Transform?, background: CGImage,
                 camera captureCamera: CaptureCamera, lighting: LightingPreset,
-                look: CaptureLook = .plain) async throws -> CGImage {
+                look: CaptureLook = .plain, width: Int? = nil, height: Int? = nil) async throws -> CGImage {
+        let width = width ?? Self.outputWidth
+        let height = height ?? Self.outputHeight
         guard let device = MTLCreateSystemDefaultDevice() else { throw RenderError.metalUnavailable }
 
         let renderer = try RealityRenderer()
@@ -91,9 +101,8 @@ final class CompositionRenderer {
 
         // With lens blur, the camera also renders from points across the lens, each turned
         // slightly toward the focus point, so the backdrop needs room beyond the frame.
-        let focusDistance = look.depthOfField.map { Self.focusDistance(for: $0, in: subject, camera: captureCamera) }
-        let apertureRadius = look.depthOfField?.apertureRadius(for: captureCamera.lens) ?? 0
-        let backdropMargin = focusDistance.map { 2 * apertureRadius * (1 / $0 + 1) / tan(captureCamera.lens.verticalFOV / 2) } ?? 0
+        let lensPlan = look.depthOfField.map { LensPlan($0, subject: subject, camera: captureCamera,
+                                                        verticalFOV: captureCamera.lens.verticalFOV) }
 
         let backdropCopy = try await makeBackdrop(
             live: backdrop,
@@ -103,7 +112,7 @@ final class CompositionRenderer {
             sceneCenter: center,
             sceneRadius: radius,
             tint: lighting.backdropTint,
-            margin: backdropMargin
+            margin: lensPlan?.backdropMargin ?? 0
         )
 
         renderer.entities.append(contentsOf: [subject, backdropCopy, camera]
@@ -116,8 +125,8 @@ final class CompositionRenderer {
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm_srgb,
-            width: Self.outputWidth,
-            height: Self.outputHeight,
+            width: width,
+            height: height,
             mipmapped: false
         )
         descriptor.usage = [.renderTarget, .shaderRead]
@@ -139,22 +148,11 @@ final class CompositionRenderer {
         }
 
         let image: CGImage
-        if let depthOfField = look.depthOfField, let focusDistance {
-            // A real lens blurs because light reaches the sensor through every point of its
-            // opening. Render from points spread across that opening, each aimed at the same
-            // focus point, and average them: what's at the focus distance lines up in every
-            // render and stays sharp, and everything else smears by how far it is from it.
-            let views = Self.apertureViews(of: captureCamera, focusDistance: focusDistance,
-                                           radius: apertureRadius,
-                                           count: Self.sampleCount(for: depthOfField))
-            var accumulator = Accumulator(width: Self.outputWidth, height: Self.outputHeight)
-            for view in views {
-                camera.position = view.position
-                camera.orientation = view.orientation
-                try await renderFrame()
-                accumulator.add(texture)
-            }
-            image = try accumulator.average()
+        if var lensPlan {
+            lensPlan.backdropDepth = Self.depth(of: backdropCopy, from: captureCamera)
+            var accumulator = Accumulator(width: width, height: height)
+            image = try await Self.renderThroughLens(lensPlan, camera: camera, captureCamera: captureCamera,
+                                                     texture: texture, accumulator: &accumulator, render: renderFrame)
         } else {
             try await renderFrame()
             image = try Self.makeImage(from: texture)
@@ -163,6 +161,89 @@ final class CompositionRenderer {
     }
 
     // MARK: Depth of field
+
+    /// What a lens-blur render needs to know about the shot.
+    struct LensPlan {
+        let depthOfField: DepthOfField
+        let focusDistance: Float
+        let apertureRadius: Float
+        let verticalFOV: Float
+        /// The nearest and farthest the scene's objects reach in front of the camera.
+        let nearest: Float
+        let farthest: Float
+        /// How far the backdrop is, once it's placed.
+        var backdropDepth: Float?
+        /// At most this many renders, for the animatic.
+        var sampleLimit: Int?
+
+        init(_ depthOfField: DepthOfField, subject: Entity, camera: CaptureCamera, verticalFOV: Float, sampleLimit: Int? = nil) {
+            self.depthOfField = depthOfField
+            self.verticalFOV = verticalFOV
+            self.sampleLimit = sampleLimit
+            focusDistance = CompositionRenderer.focusDistance(for: depthOfField, in: subject, camera: camera)
+            apertureRadius = depthOfField.apertureRadius(for: camera.lens)
+            let bounds = subject.visualBounds(relativeTo: nil)
+            let forward = camera.orientation.act([0, 0, -1])
+            var near = Float.infinity, far: Float = 0
+            if !bounds.isEmpty {
+                for corner in 0..<8 {
+                    let point = SIMD3(corner & 1 == 0 ? bounds.min.x : bounds.max.x, corner & 2 == 0 ? bounds.min.y : bounds.max.y,
+                                      corner & 4 == 0 ? bounds.min.z : bounds.max.z)
+                    let depth = simd_dot(point - camera.position, forward)
+                    near = min(near, depth)
+                    far = max(far, depth)
+                }
+            }
+            nearest = max(near.isFinite ? near : focusDistance, 0.05)
+            farthest = max(far, focusDistance)
+        }
+
+        /// Extra room the backdrop needs beyond the frame, since renders from the edge of the
+        /// lens turn slightly toward the focus point.
+        var backdropMargin: Float { 2 * apertureRadius * (1 / focusDistance + 1) / tan(verticalFOV / 2) }
+
+        var sampleCount: Int {
+            let count = CompositionRenderer.sampleCount(for: depthOfField)
+            return sampleLimit.map { min($0, count) } ?? count
+        }
+
+        /// The widest blur in the picture, in pixels for a frame `height` pixels tall.
+        func largestBlur(height: Int) -> Float {
+            let pixelsPerRadian = Float(height) / verticalFOV
+            let depths = [nearest, farthest, backdropDepth ?? farthest].filter { $0 > 0.01 }
+            let widest = depths.map { abs(1 / focusDistance - 1 / $0) }.max() ?? 0
+            return 2 * apertureRadius * widest * pixelsPerRadian
+        }
+    }
+
+    /// A real lens blurs because light reaches the sensor through every point of its opening.
+    /// Renders from points spread across that opening, each aimed at the same focus point, and
+    /// averages them: what's at the focus distance lines up in every render and stays sharp,
+    /// and everything else smears by how far it is from it. With few renders a strong blur
+    /// shows as separate copies, so where the renders disagree a lot (only out of focus), the
+    /// average is softened just enough to merge them.
+    static func renderThroughLens(_ plan: LensPlan, camera: PerspectiveCamera, captureCamera: CaptureCamera,
+                                  texture: any MTLTexture, accumulator: inout Accumulator,
+                                  render: () async throws -> Void) async throws -> CGImage {
+        let views = apertureViews(of: captureCamera, focusDistance: plan.focusDistance, radius: plan.apertureRadius,
+                                  count: plan.sampleCount)
+        accumulator.reset()
+        for view in views {
+            camera.position = view.position
+            camera.orientation = view.orientation
+            try await render()
+            accumulator.add(texture)
+        }
+        camera.position = captureCamera.position
+        camera.orientation = captureCamera.orientation
+        let spacing = plan.largestBlur(height: accumulator.height) / Float(views.count).squareRoot()
+        return try accumulator.finish(smoothing: spacing * 0.6)
+    }
+
+    /// How far an entity is in front of the camera.
+    static func depth(of entity: Entity, from camera: CaptureCamera) -> Float {
+        simd_dot(entity.position(relativeTo: nil) - camera.position, camera.orientation.act([0, 0, -1]))
+    }
 
     /// Renders to average for lens blur. Wide apertures blur more, so they need more
     /// renders to keep the blur smooth instead of showing separate copies.
@@ -259,13 +340,17 @@ final class CompositionRenderer {
         return simd_quatf(simd_float3x3(columns: (right, trueUp, back)))
     }
 
-    /// Sums rendered frames, pixel by pixel, to average them.
-    private struct Accumulator {
+    /// Sums rendered frames, pixel by pixel, to average them, and tracks how much each
+    /// pixel's brightness varies between them.
+    struct Accumulator {
         let width: Int
         let height: Int
         private var sums: [Float]
         private var frame: [Float]
         private var bytes: [UInt8]
+        private var luma: [Float]
+        private var lumaSums: [Float]
+        private var lumaSquares: [Float]
         private var count = 0
 
         init(width: Int, height: Int) {
@@ -274,6 +359,16 @@ final class CompositionRenderer {
             sums = [Float](repeating: 0, count: width * height * 4)
             frame = sums
             bytes = [UInt8](repeating: 0, count: width * height * 4)
+            luma = [Float](repeating: 0, count: width * height)
+            lumaSums = luma
+            lumaSquares = luma
+        }
+
+        mutating func reset() {
+            vDSP_vclr(&sums, 1, vDSP_Length(sums.count))
+            vDSP_vclr(&lumaSums, 1, vDSP_Length(lumaSums.count))
+            vDSP_vclr(&lumaSquares, 1, vDSP_Length(lumaSquares.count))
+            count = 0
         }
 
         mutating func add(_ texture: any MTLTexture) {
@@ -281,19 +376,74 @@ final class CompositionRenderer {
             let length = vDSP_Length(bytes.count)
             vDSP_vfltu8(bytes, 1, &frame, 1, length)
             vDSP_vadd(sums, 1, frame, 1, &sums, 1, length)
+
+            // Brightness of each pixel (stored as BGRA), and its square, for the spread.
+            let pixels = vDSP_Length(width * height)
+            frame.withUnsafeBufferPointer { channels in
+                guard let base = channels.baseAddress else { return }
+                var blue: Float = 0.114, green: Float = 0.587, red: Float = 0.299
+                vDSP_vsmul(base, 4, &blue, &luma, 1, pixels)
+                vDSP_vsma(base + 1, 4, &green, luma, 1, &luma, 1, pixels)
+                vDSP_vsma(base + 2, 4, &red, luma, 1, &luma, 1, pixels)
+            }
+            vDSP_vadd(lumaSums, 1, luma, 1, &lumaSums, 1, pixels)
+            vDSP_vsq(luma, 1, &luma, 1, pixels)
+            vDSP_vadd(lumaSquares, 1, luma, 1, &lumaSquares, 1, pixels)
             count += 1
         }
 
-        /// The average, in the same pixel layout as `makeImage(from:)`. Frames are averaged
-        /// as stored (sRGB-encoded), which is close enough to how lens blur mixes light here.
-        mutating func average() throws -> CGImage {
+        /// The average, in the same pixel layout as `makeImage(from:)`. Frames are averaged as
+        /// stored (sRGB-encoded), which is close enough to how lens blur mixes light here.
+        /// - Parameter smoothing: Blur radius (pixels) for areas where the frames disagree a lot.
+        mutating func finish(smoothing: Float) throws -> CGImage {
             var divisor = Float(max(count, 1))
             let length = vDSP_Length(sums.count)
             vDSP_vsdiv(sums, 1, &divisor, &frame, 1, length)
             vDSP_vfixru8(frame, 1, &bytes, 1, length)
-            return try CompositionRenderer.makeImage(bytes: bytes, width: width, height: height)
+            let average = try CompositionRenderer.makeImage(bytes: bytes, width: width, height: height)
+            guard smoothing >= 1, count > 1 else { return average }
+
+            // Spread of brightness: sqrt(mean of squares − square of mean), 0–255.
+            let pixels = vDSP_Length(width * height)
+            var mean = [Float](repeating: 0, count: width * height)
+            vDSP_vsdiv(lumaSums, 1, &divisor, &mean, 1, pixels)
+            vDSP_vsq(mean, 1, &mean, 1, pixels)
+            vDSP_vsdiv(lumaSquares, 1, &divisor, &luma, 1, pixels)
+            vDSP_vsub(mean, 1, luma, 1, &luma, 1, pixels)
+            var zero: Float = 0, ceiling: Float = 1e9
+            vDSP_vclip(luma, 1, &zero, &ceiling, &luma, 1, pixels)
+            vvsqrtf(&luma, luma, [Int32(width * height)])
+            // Little spread (in focus) keeps the average; lots (copies of a far blur) takes the softened one.
+            var offset: Float = -3, scale: Float = 255 / 12
+            vDSP_vsadd(luma, 1, &offset, &luma, 1, pixels)
+            vDSP_vsmul(luma, 1, &scale, &luma, 1, pixels)
+            var top: Float = 255
+            vDSP_vclip(luma, 1, &zero, &top, &luma, 1, pixels)
+            var maskBytes = [UInt8](repeating: 0, count: width * height)
+            vDSP_vfixru8(luma, 1, &maskBytes, 1, pixels)
+            guard let provider = CGDataProvider(data: Data(maskBytes) as CFData),
+                  let maskImage = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 8,
+                                          bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
+                                          bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                                          provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+            else { return average }
+
+            let source = CIImage(cgImage: average)
+            let extent = source.extent
+            let softened = source.clampedToExtent().applyingGaussianBlur(sigma: Double(smoothing)).cropped(to: extent)
+            // Widen the mask a little so the edges of blurred areas soften too.
+            let mask = CIImage(cgImage: maskImage).clampedToExtent()
+                .applyingGaussianBlur(sigma: Double(smoothing) * 0.5).cropped(to: extent)
+            let blended = softened.applyingFilter("CIBlendWithMask", parameters: [
+                kCIInputBackgroundImageKey: source, kCIInputMaskImageKey: mask,
+            ])
+            return CompositionRenderer.ciContext.createCGImage(blended, from: extent, format: .RGBA8,
+                                                               colorSpace: average.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!)
+                ?? average
         }
     }
+
+    fileprivate static let ciContext = CIContext(options: [.cacheIntermediates: false])
 
     private static func stripInteraction(from entity: Entity) {
         entity.components.remove(ManipulationComponent.self)
@@ -543,6 +693,10 @@ extension CompositionRenderer {
             camera.camera.fieldOfViewInDegrees = frame.verticalFOV * 180 / .pi
             camera.position = frame.camera.position
             camera.orientation = frame.camera.orientation
+            var lensPlan = look.depthOfField.map {
+                LensPlan($0, subject: snapshot, camera: frame.camera, verticalFOV: frame.verticalFOV,
+                         sampleLimit: Self.animaticSampleLimit)
+            }
 
             if backgroundTexture == nil {
                 backgroundTexture = try await TextureResource(image: background, withName: nil,
@@ -550,7 +704,8 @@ extension CompositionRenderer {
             }
             let backdropCopy = try await base.makeBackdrop(
                 live: backdrop, image: background, pose: backdropPose, camera: frame.camera,
-                sceneCenter: center, sceneRadius: radius, tint: lighting.backdropTint, texture: backgroundTexture)
+                sceneCenter: center, sceneRadius: radius, tint: lighting.backdropTint, texture: backgroundTexture,
+                margin: lensPlan?.backdropMargin ?? 0)
 
             stage.addChild(snapshot)
             stage.addChild(backdropCopy)
@@ -558,17 +713,40 @@ extension CompositionRenderer {
                 stage.addChild(light)
             }
 
-            try renderer.update(0)
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                do {
-                    try renderer.updateAndRender(deltaTime: 0, cameraOutput: output, onComplete: { _ in
-                        continuation.resume()
-                    })
-                } catch {
-                    continuation.resume(throwing: error)
+            let renderer = renderer, output = output
+            func renderFrame() async throws {
+                try renderer.update(0)
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    do {
+                        try renderer.updateAndRender(deltaTime: 0, cameraOutput: output, onComplete: { _ in
+                            continuation.resume()
+                        })
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
-            return FilmFinisher.finish(try CompositionRenderer.makeImage(from: texture), look: look, lighting: lighting)
+
+            let image: CGImage
+            if lensPlan != nil {
+                lensPlan?.backdropDepth = CompositionRenderer.depth(of: backdropCopy, from: frame.camera)
+                // Taken out while in use, so its large buffers are changed in place rather than copied.
+                var frameAccumulator = accumulator ?? Accumulator(width: texture.width, height: texture.height)
+                accumulator = nil
+                image = try await CompositionRenderer.renderThroughLens(lensPlan!, camera: camera, captureCamera: frame.camera,
+                                                                       texture: texture, accumulator: &frameAccumulator,
+                                                                       render: renderFrame)
+                accumulator = frameAccumulator
+            } else {
+                try await renderFrame()
+                image = try CompositionRenderer.makeImage(from: texture)
+            }
+            return FilmFinisher.finish(image, look: look, lighting: lighting)
         }
+
+        /// Lens blur in the animatic uses fewer renders per frame than a photo, so it stays
+        /// quick enough to export; the smoothing hides most of the difference.
+        static let animaticSampleLimit = 10
+        private var accumulator: Accumulator?
     }
 }

@@ -19,7 +19,9 @@ class AppModel {
         case inTransition
         case open
     }
-    var immersiveSpaceState = ImmersiveSpaceState.closed
+    var immersiveSpaceState = ImmersiveSpaceState.closed {
+        didSet { capture.isSpaceOpen = immersiveSpaceState == .open }
+    }
 
     var selectedTab: WorkspaceTab = .set
 
@@ -84,6 +86,8 @@ class AppModel {
         self.animator = KeyframeAnimator(scene: workspace)
         self.tableAnchoring = TableAnchoring(workspace: workspace)
         self.poseEditor = PoseEditor(workspace: workspace)
+        self.capture = CaptureController(workspace: workspace)
+        self.photoSync = PhotoSyncController(workspace: workspace, photos: photos)
         workspace.setEyelinesVisible(showsEyelines)
         workspace.setBase(BaseTemplateBuilder.make(.grass), size: baseMeters)
         refreshProjects()
@@ -256,6 +260,8 @@ class AppModel {
 
         let usedModels = Set(loaded?.saved.state.objects.compactMap(\.recipe.importedFileID) ?? [])
         let missingModels = await loadImportedModels(usedModels, in: info.id)
+        // The open project stayed editable while the models loaded; keep anything changed meanwhile.
+        guard saveNow() else { return false }
 
         resetToEmptyProject()
         currentProject = info
@@ -635,6 +641,7 @@ class AppModel {
     /// Sets one joint angle on the selected character, live (wrap in begin/endPoseChange).
     /// The part stops where it would sink into the body.
     func setJointAngle(_ value: Float, axis: JointAxis, of joint: Joint) {
+        stopLookingIfPosing(joint)
         editSelectedPose { poseEditor.setJointAngle(value, axis: axis, of: joint, on: $0) }
     }
 
@@ -650,6 +657,7 @@ class AppModel {
         guard var pose = selectedCharacterPose, !pose[joint].isZero else { return }
         pose[joint] = .zero
         beginPoseChange()
+        stopLookingIfPosing(joint)
         editSelectedPose { poseEditor.setPose(pose, on: $0) }
         endPoseChange()
     }
@@ -673,6 +681,23 @@ class AppModel {
         endPoseChange()
     }
 
+    /// Changes one of the selected character's hands: open, fist, pointing, and so on.
+    func setHandShape(_ shape: HandShape, for hand: Hand) {
+        guard var pose = selectedCharacterPose, pose[hand] != shape else { return }
+        pose[hand] = shape
+        beginPoseChange()
+        editSelectedPose { poseEditor.setPose(pose, on: $0) }
+        endPoseChange()
+    }
+
+    /// Curls a character's hand round what it's holding, or relaxes it after letting go.
+    private func setHandShape(_ shape: HandShape, for hand: Hand, ofCharacter id: ObjectID, onlyIf current: HandShape? = nil) {
+        guard let character = workspace.object(withID: id), var pose = poseEditor.pose(of: character),
+              current.map({ pose[hand] == $0 }) ?? true else { return }
+        pose[hand] = shape
+        poseEditor.setPose(pose, on: character)
+    }
+
     func applyPreset(_ preset: PosePreset) {
         applyPose(preset.pose)
         objectNote = preset.requirement
@@ -684,40 +709,122 @@ class AppModel {
 
     // Looking at things
 
-    /// What the selected character was last turned to look at, if it's still in the scene.
+    /// What each character keeps looking at, by character. Saved with the project.
+    private(set) var lookTargets: [ObjectID: ObjectID] = [:]
+
+    /// What the selected character is looking at, if anything.
     var selectedLookTarget: ObjectSummary? {
-        guard let id = selectedObjectID, let target = poseEditor.lookTargets[id] else { return nil }
+        guard let id = selectedObjectID, let target = lookTargets[id] else { return nil }
         return objects.first { $0.id == target }
     }
 
-    /// Turns the selected character's head, neck, and chest to face another object or
-    /// character (at its eyes). One undo step. The turn is a pose like any other: it doesn't
-    /// follow the target afterwards, so use `reaimSelectedCharacter()` after things move.
+    /// The selected character looks at another object or character (at its eyes) and keeps
+    /// looking: its head, neck, and chest follow the target whenever either moves, through
+    /// editing, playback, and renders, until `stopLookingSelectedCharacter()` or the head is
+    /// posed by hand. One undo step.
     func lookSelectedCharacter(at targetID: ObjectID) {
         guard let id = selectedObjectID, targetID != id, let object = selectedCharacterEntity,
-              let target = workspace.object(withID: targetID), let point = lookPoint(of: target) else { return }
+              let target = workspace.object(withID: targetID), let point = LookTracking.point(of: target) else { return }
         poseNote = nil
         beginPoseChange()
-        if poseEditor.look(at: point, target: targetID, on: object, id: id) { exports.invalidate() }
+        lookTargets[id] = targetID
+        applyLookTarget(to: object, id: id)
+        if LookTracking.aim(object) {
+            poseEditor.poseChanged()
+            exports.invalidate()
+        }
         endPoseChange()
         if let off = poseEditor.lookError(at: point, on: object), off > 8 {
             poseNote = "That's as far as the head can turn. Turn the whole character toward it to look straight at it."
         }
     }
 
-    /// Looks again at the last target, after either of them has moved.
-    func reaimSelectedCharacter() {
-        guard let target = selectedLookTarget else { return }
-        lookSelectedCharacter(at: target.id)
+    /// Whether the selected character walks when it moves between keyframes.
+    var selectedCharacterWalks: Bool {
+        get { selectedObjectID.map { animator.walkers.contains($0) } ?? false }
+        set {
+            guard let id = selectedObjectID, isSelectedObjectCharacter, newValue != selectedCharacterWalks else { return }
+            checkpoint()
+            if newValue { animator.walkers.insert(id) } else { animator.walkers.remove(id) }
+            exports.invalidate()
+            documentChanged()
+        }
     }
 
-    /// Where to look on an object: a character's eyes, or the middle of anything else.
-    private func lookPoint(of target: Entity) -> SIMD3<Float>? {
-        if let rig = CharacterBuilder.rig(in: target), let head = CharacterBuilder.joints(in: rig)[.head],
-           let proportions = rig.components[CharacterRigComponent.self]?.proportions {
-            return head.convert(position: HeadAim.eyeOffset(layout: RigLayout(proportions: proportions)), to: nil)
+    /// The selected character stops following its target; its head stays where it is.
+    func stopLookingSelectedCharacter() {
+        guard let id = selectedObjectID, lookTargets[id] != nil, let object = selectedCharacterEntity else { return }
+        checkpoint()
+        lookTargets[id] = nil
+        applyLookTarget(to: object, id: id)
+        documentChanged()
+    }
+
+    /// Posing the head, neck, or chest by hand ends looking at something, which would
+    /// otherwise turn them straight back.
+    private func stopLookingIfPosing(_ joint: Joint) {
+        guard [.chest, .neck, .head].contains(joint), let id = selectedObjectID, lookTargets[id] != nil,
+              let object = selectedCharacterEntity else { return }
+        lookTargets[id] = nil
+        applyLookTarget(to: object, id: id)
+    }
+
+    /// Makes the entity match `lookTargets`.
+    private func applyLookTarget(to entity: Entity, id: ObjectID) {
+        if let target = lookTargets[id] {
+            entity.components.set(LookTargetComponent(target: target))
+        } else {
+            entity.components.remove(LookTargetComponent.self)
         }
-        return WorkspaceScene.geometryBounds(of: target).map { target.convert(position: $0.center, to: nil) }
+    }
+
+    // Leaning
+
+    /// Leans the selected character on an object with its back, a shoulder, or a hand.
+    /// One undo step. If the object can't be leaned on that way, nothing changes and
+    /// `poseNote` says why.
+    func leanSelectedCharacter(on supportID: ObjectID, with part: LeanPart) {
+        guard let object = selectedCharacterEntity, let support = workspace.object(withID: supportID),
+              let supportName = objects.first(where: { $0.id == supportID })?.name else { return }
+        poseNote = nil
+        beginPoseChange()
+        let result = poseEditor.lean(object, on: support, with: part)
+        if result == .leaning || result == .steppedCloser {
+            exports.invalidate()
+            workspace.showSelection(on: object)
+        }
+        endPoseChange()
+        objectNote = nil
+        switch result {
+        case .surfaceTooLow where part == .hip:
+            poseNote = "\(supportName)'s top isn't at hip height (about a table or car hood). Try Sit On for something lower."
+        case .surfaceTooLow where part == .elbows:
+            poseNote = "\(supportName)'s top isn't at table height for leaning on the elbows."
+        case .surfaceTooLow:
+            poseNote = "\(supportName) is too low to lean a back or shoulder on. Try a hand, or Sit On."
+        case .noSide:
+            poseNote = "The character is standing over \(supportName). Move it beside it first."
+        case .steppedCloser:
+            poseNote = "Stepped closer so the hand could reach."
+        default:
+            break
+        }
+    }
+
+    // Holding hands
+
+    /// Other characters the selected one can hold hands with.
+    var handHoldPartners: [ObjectSummary] { characters.filter { $0.id != selectedObjectID } }
+
+    /// The selected character and another hold hands: the hands nearest each other meet
+    /// between them, and the other steps closer if needed. One undo step.
+    func holdHands(with otherID: ObjectID) {
+        guard let object = selectedCharacterEntity, let other = workspace.object(withID: otherID),
+              other.components.has(CharacterPoseComponent.self) else { return }
+        poseNote = nil
+        beginPoseChange()
+        if poseEditor.holdHands(object, with: other) { exports.invalidate() }
+        endPoseChange()
     }
 
     // Sitting
@@ -810,6 +917,7 @@ class AppModel {
     /// Swings a joint to follow a drag: `from` and `to` are the drag's start and current
     /// directions from the joint, in its parent's space. End with `endPoseDrag()`.
     func swingJoint(_ joint: Joint, from: SIMD3<Float>, to: SIMD3<Float>) {
+        stopLookingIfPosing(joint)
         editSelectedPose { poseEditor.swingJoint(joint, from: from, to: to, on: $0, beginning: beginPoseChange) }
     }
 
@@ -903,7 +1011,8 @@ class AppModel {
         let name = uniqueObjectName(summary.name)
         let copy = workspace.duplicate(object, id: id)
         copy.name = name
-        applyHold(to: copy, id: id)
+        workspace.setHold(nil, on: copy)
+        applyLookTarget(to: copy, id: id)
         SceneFeedback.appear(copy)
         objects.append(ObjectSummary(id: id, name: name, source: summary.source, recipe: summary.recipe))
         selectObject(id)
@@ -919,10 +1028,14 @@ class AppModel {
         objects.removeAll { $0.id == id }
         // Whatever this character was holding drops, and so does this object if it was held.
         for (prop, hold) in holds where prop == id || hold.character == id {
-            holds[prop] = nil
-            if let entity = workspace.object(withID: prop) { applyHold(to: entity, id: prop) }
+            if let entity = workspace.object(withID: prop) { workspace.setHold(nil, on: entity) }
         }
-        poseEditor.forgetLookTarget(of: id)
+        animator.walkers.remove(id)
+        // Nobody keeps looking at it, and it stops looking at anything.
+        for (looker, target) in lookTargets where looker == id || target == id {
+            lookTargets[looker] = nil
+            if let entity = workspace.object(withID: looker) { applyLookTarget(to: entity, id: looker) }
+        }
         selectObject(nil)
         // The object leaves every keyframe it was in, so those keyframes have changed.
         keyframesChanged(animator.removeObject(id))
@@ -1052,17 +1165,21 @@ class AppModel {
 
     /// The user let go of an object. A held object keeps its new place in the hand.
     func manipulationEnded(on entity: Entity) {
-        guard let object = workspace.object(containing: entity), let id = workspace.objectID(of: object),
-              var hold = holds[id], let wrist = HeldProps.wrist(for: hold, near: object) else { return }
+        guard let object = workspace.object(containing: entity),
+              var hold = workspace.hold(of: object), let wrist = HeldProps.wrist(for: hold, near: object) else { return }
         hold.offset = CodableTransform(HeldProps.offset(of: object, from: wrist))
-        holds[id] = hold
-        applyHold(to: object, id: id)
+        workspace.setHold(hold, on: object)
+        poseEditor.poseChanged()
     }
 
     // Held objects
 
-    /// Objects characters are holding, by object.
-    private(set) var holds: [ObjectID: Hold] = [:]
+    /// Objects characters are holding right now, by object. The scene is the record: during
+    /// playback, objects go in and out of hands as the keyframes say.
+    var holds: [ObjectID: Hold] {
+        observePoseChanges()
+        return workspace.currentHolds()
+    }
 
     /// "Mannequin's right hand", for the selected object's row.
     func holderDescription(of id: ObjectID) -> String? {
@@ -1079,9 +1196,10 @@ class AppModel {
         else { return }
         animator.pause()
         checkpoint()
+        setHandShape(.grip, for: hand, ofCharacter: characterID)
         let offset = HeldProps.grip(prop, in: wrist)
-        holds[summary.id] = Hold(character: characterID, hand: hand, offset: CodableTransform(offset))
-        applyHold(to: prop, id: summary.id)
+        workspace.setHold(Hold(character: characterID, hand: hand, offset: CodableTransform(offset)), on: prop)
+        poseEditor.poseChanged()
         exports.invalidate()
         documentChanged()
         sceneEdited()
@@ -1092,28 +1210,16 @@ class AppModel {
         guard let id = selectedObjectID, holds[id] != nil, let prop = workspace.object(withID: id) else { return }
         animator.pause()
         checkpoint()
-        holds[id] = nil
-        applyHold(to: prop, id: id)
+        if let hold = holds[id] {
+            setHandShape(.relaxed, for: hold.hand, ofCharacter: hold.character, onlyIf: .grip)
+        }
+        workspace.setHold(nil, on: prop)
+        poseEditor.poseChanged()
         exports.invalidate()
         documentChanged()
         sceneEdited()
     }
 
-    /// Makes the entity match `holds`: in the hand and out of gravity's way, or free.
-    private func applyHold(to entity: Entity, id: ObjectID) {
-        var gravity = entity.components[ObjectGravityComponent.self] ?? ObjectGravityComponent()
-        gravity.fallSpeed = 0
-        if let hold = holds[id] {
-            entity.components.set(HeldPropComponent(hold: hold))
-            gravity.isAttached = true
-            entity.components.set(gravity)
-            HeldProps.attach(entity)
-        } else {
-            entity.components.remove(HeldPropComponent.self)
-            gravity.isAttached = false
-            entity.components.set(gravity)
-        }
-    }
 
     // MARK: Background
 
@@ -1196,78 +1302,70 @@ class AppModel {
 
     // MARK: Capture
 
-    enum CaptureStatus: Hashable {
-        case attached(keyframeNumber: Int)
-        case libraryOnly
-        case retaken(keyframeNumber: Int)
-        case saved
-        case failed(String)
-    }
+    typealias CaptureStatus = CaptureController.Status
+
+    /// The capture camera's settings, self-timer, and rendering. AppModel files what it shoots.
+    let capture: CaptureController
+    /// Re-renders keyframe photos when their keyframes change.
+    let photoSync: PhotoSyncController
 
     /// Every photo taken this session.
     let photos = PhotoLibrary()
     /// The photo shown large in the Capture tab.
     var selectedLibraryPhotoID: CapturedPhoto.ID?
-    private(set) var isCapturing = false
-    private(set) var isSavingCapture = false
-    private(set) var captureStatus: CaptureStatus?
-    /// Seconds left on the self-timer, or nil when no countdown is running.
-    private(set) var captureCountdown: Int?
-    @ObservationIgnored private var countdownTask: Task<Void, Never>?
 
-    var captureLighting: LightingPreset = .studio {
-        didSet {
+    // Settings are saved with the project, so changing one marks it changed.
+
+    var captureLens: CaptureLens {
+        get { capture.lens }
+        set { capture.lens = newValue; documentChanged() }
+    }
+
+    /// Frame shape, lens blur, and film grade for new captures.
+    var captureLook: CaptureLook {
+        get { capture.look }
+        set {
+            guard newValue != capture.look else { return }
+            capture.look = newValue
             documentChanged()
-            if captureLighting != oldValue { updateLightingPreview() }
         }
+    }
+
+    var captureLighting: LightingPreset {
+        get { capture.lighting }
+        set { capture.lighting = newValue; documentChanged() }
     }
 
     /// Light the diorama in the headset with the capture lighting, instead of the room's.
-    var isLightingPreviewOn: Bool = UserDefaults.standard.bool(forKey: "isLightingPreviewOn") {
-        didSet {
-            UserDefaults.standard.set(isLightingPreviewOn, forKey: "isLightingPreviewOn")
-            updateLightingPreview()
-        }
-    }
-
-    /// Applies (or removes) the in-headset lighting preview to match the current settings.
-    func updateLightingPreview() {
-        let preset = isLightingPreviewOn && immersiveSpaceState == .open ? captureLighting : nil
-        let camera = viewerCamera()
-        Task { await workspace.setLightingPreview(preset, camera: camera) }
-    }
-
-    /// A camera where the viewer is standing, looking where they look.
-    func viewerCamera() -> CaptureCamera {
-        if let head = SpatialTrackingService.shared.viewerTransform {
-            return .level(fromHead: head, lens: captureLens)
-        }
-        // No head tracking (such as in Simulator): look at the base from a standing position.
-        return .looking(from: SpatialTrackingService.fallbackViewerPosition,
-                        at: workspace.baseAnchor.position(relativeTo: nil), lens: captureLens)
+    var isLightingPreviewOn: Bool {
+        get { capture.isLightingPreviewOn }
+        set { capture.isLightingPreviewOn = newValue }
     }
 
     /// When a keyframe changes, re-render its photos from their saved angles instead of
     /// moving them to the library.
-    var keepPhotosInSync: Bool = UserDefaults.standard.object(forKey: "keepPhotosInSync") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(keepPhotosInSync, forKey: "keepPhotosInSync") }
-    }
-    private(set) var isUpdatingPhotos = false
-
-    var captureLens: CaptureLens = .standard {
-        didSet {
-            workspace.setViewfinder(lens: captureLens, format: captureLook.format)
-            documentChanged()
-        }
+    var keepPhotosInSync: Bool {
+        get { photoSync.isOn }
+        set { photoSync.isOn = newValue }
     }
 
-    /// Frame format and film grade for new captures.
-    var captureLook: CaptureLook = .standard {
-        didSet {
-            guard captureLook != oldValue else { return }
-            workspace.setViewfinder(lens: captureLens, format: captureLook.format)
-            documentChanged()
-        }
+    var isCapturing: Bool { capture.isCapturing }
+    var isSavingCapture: Bool { capture.isSavingToPhotos }
+    var isRenderingPreview: Bool { capture.isRenderingPreview }
+    var isUpdatingPhotos: Bool { photoSync.isUpdating }
+    var captureStatus: CaptureStatus? { capture.status }
+    /// Seconds left on the self-timer, or nil when no countdown is running.
+    var captureCountdown: Int? { capture.countdown }
+
+    /// Applies (or removes) the in-headset lighting preview to match the current settings.
+    func updateLightingPreview() {
+        capture.isSpaceOpen = immersiveSpaceState == .open
+        capture.refreshLightingPreview()
+    }
+
+    /// A camera where the viewer is standing, looking where they look.
+    func viewerCamera() -> CaptureCamera {
+        capture.viewerCamera()
     }
 
     /// The viewfinder shows whenever a photo can be lined up: on the Photos tab, on the
@@ -1280,7 +1378,7 @@ class AppModel {
     }
 
     var canCapture: Bool {
-        background != nil && !isCapturing && captureCountdown == nil
+        background != nil && !capture.isBusy
     }
 
     var selectedLibraryPhoto: CapturedPhoto? {
@@ -1298,26 +1396,13 @@ class AppModel {
     }
 
     /// Starts a 3-second self-timer, then captures from wherever the viewer is looking.
-    /// The timer gives them time to look away from this panel and back at their scene.
     func startCapture() {
         guard canCapture else { return }
-        captureStatus = nil
-        countdownTask = Task { [weak self] in
-            for remaining in [3, 2, 1] {
-                self?.captureCountdown = remaining
-                self?.workspace.playInterfaceSound(.tick, gain: -12)
-                try? await Task.sleep(for: .seconds(1))
-                if Task.isCancelled { return }
-            }
-            self?.captureCountdown = nil
-            await self?.captureComposition()
-        }
+        capture.startCountdown { [weak self] in await self?.captureComposition() }
     }
 
     func cancelCapture() {
-        countdownTask?.cancel()
-        countdownTask = nil
-        captureCountdown = nil
+        capture.cancelCountdown()
     }
 
     /// From the Animate tab: take a photo of the selected keyframe, staying on that tab.
@@ -1326,65 +1411,45 @@ class AppModel {
         startCapture()
     }
 
-    private func captureComposition() async {
-        guard let background, !isCapturing else { return }
-        isCapturing = true
-        defer { isCapturing = false }
+    /// A small render from where the viewer stands with the current camera settings, so lens
+    /// blur and the frame shape can be checked before taking the photo. Nil if it can't render.
+    func renderCameraPreview() async -> UIImage? {
+        guard let background else { return nil }
+        return await capture.renderPreview(background: background.image)
+    }
 
+    /// Takes the photo and files it: on the selected keyframe, or in the library.
+    private func captureComposition() async {
+        guard let background, !capture.isCapturing else { return }
         checkpoint()
         // Decide the keyframe at the moment the shutter fires, and make sure it holds
         // exactly what's being photographed.
         let target = captureTarget
         if target != nil { autoSaveSelectedKeyframe() }
-
-        let camera = viewerCamera()
-
-        workspace.flashViewfinder()
-        workspace.playInterfaceSound(.shutter, gain: -4)
-
-        // Remember where the backdrop was, so this exact shot can be rendered again later.
-        let backdropPose = CodableTransform(Transform(matrix: workspace.backdrop.transformMatrix(relativeTo: nil)))
         do {
-            let image = try await CompositionRenderer().render(
-                snapshot: CompositionRenderer.snapshot(of: workspace.baseAnchor),
-                backdrop: workspace.backdrop,
-                backdropPose: nil,
-                background: background.image,
-                camera: camera,
-                lighting: captureLighting,
-                look: captureLook
-            )
-            guard let photo = photos.add(image, lens: captureLens, keyframe: target?.keyframe.id, camera: camera,
-                                         lighting: captureLighting, look: captureLook,
-                                         backdropPose: backdropPose) else {
-                captureStatus = .failed("The capture couldn't be saved.")
+            let shot = try await capture.shoot(background: background.image)
+            guard let photo = photos.add(shot.image, lens: shot.lens, keyframe: target?.keyframe.id, camera: shot.camera,
+                                         lighting: shot.lighting, look: shot.look, backdropPose: shot.backdropPose) else {
+                capture.status = .failed("The capture couldn't be saved.")
                 return
             }
             selectedLibraryPhotoID = photo.id
             if let target {
                 focusedKeyframePhotoID = photo.id
-                captureStatus = .attached(keyframeNumber: target.number)
+                capture.status = .attached(keyframeNumber: target.number)
             } else {
-                captureStatus = .libraryOnly
+                capture.status = .libraryOnly
             }
             exports.invalidate()
             documentChanged()
         } catch {
-            captureStatus = .failed(error.localizedDescription)
+            capture.status = .failed(error.localizedDescription)
         }
     }
 
     func saveSelectedPhotoToPhotos() async {
-        guard let photo = selectedLibraryPhoto, let image = photos.image(for: photo), !isSavingCapture else { return }
-        isSavingCapture = true
-        defer { isSavingCapture = false }
-
-        do {
-            try await PhotoLibrarySaver.save(image)
-            captureStatus = .saved
-        } catch {
-            captureStatus = .failed(error.localizedDescription)
-        }
+        guard let photo = selectedLibraryPhoto, let image = photos.image(for: photo) else { return }
+        await capture.saveToPhotos(image)
     }
 
     func deletePhoto(_ photo: CapturedPhoto) {
@@ -1392,7 +1457,7 @@ class AppModel {
         photos.delete(photo)
         if selectedLibraryPhotoID == photo.id { selectedLibraryPhotoID = nil }
         if focusedKeyframePhotoID == photo.id { focusedKeyframePhotoID = nil }
-        captureStatus = nil
+        capture.status = nil
         exports.invalidate()
         documentChanged()
     }
@@ -1463,96 +1528,58 @@ class AppModel {
     /// re-rendered from their saved angles, or, if that's off or impossible (photos taken
     /// before angles were saved), moved to the library.
     private func keyframesChanged(_ keyframeIDs: [Keyframe.ID]) {
-        var jobs: [(photo: CapturedPhoto, snapshot: Entity)] = []
-        for id in keyframeIDs {
-            let affected = photos.photos(for: id)
-            guard !affected.isEmpty else { continue }
-            guard keepPhotosInSync, background != nil, let keyframe = animator.timeline.keyframe(id) else {
-                detachPhotos(from: id)
-                continue
-            }
-            // One snapshot per keyframe, taken now, before anything else can change.
-            let snapshot = workspace.snapshot(at: keyframe.poses, characterPoses: keyframe.characterPoses,
-                                              keyframedObjects: animator.timeline.keyframedObjectIDs)
-            for photo in affected {
-                if photo.camera != nil {
-                    jobs.append((photo, snapshot))
-                } else {
-                    photos.detach(photo)
-                }
+        let (jobs, detached) = photoSync.prepare(keyframeIDs, timeline: animator.timeline, canRender: background != nil)
+        for (keyframe, count) in detached {
+            if let number = animator.number(of: keyframe) {
+                keyframeNotice = "Keyframe \(number) changed, so its \(count == 1 ? "photo was" : "\(count) photos were") moved to the library."
             }
         }
-        guard !jobs.isEmpty else { return }
-        Task { await rerender(jobs) }
-    }
-
-    private func rerender(_ jobs: [(photo: CapturedPhoto, snapshot: Entity)]) async {
-        guard let background else { return }
-        isUpdatingPhotos = true
-        defer { isUpdatingPhotos = false }
-
-        var updated = 0
-        for (photo, snapshot) in jobs {
-            // Skip photos deleted or detached since the change.
-            guard let camera = photo.camera, photos.photo(photo.id)?.keyframeID == photo.keyframeID else { continue }
-            guard let image = try? await CompositionRenderer().render(
-                snapshot: snapshot, backdrop: workspace.backdrop, backdropPose: photo.backdropPose?.transform,
-                background: background.image, camera: camera, lighting: photo.lighting, look: photo.look),
-                  let replacement = photos.replace(photo, with: image)
-            else { continue }
-            updated += 1
-            if focusedKeyframePhotoID == photo.id { focusedKeyframePhotoID = replacement.id }
-            if selectedLibraryPhotoID == photo.id { selectedLibraryPhotoID = replacement.id }
+        if !detached.isEmpty {
+            if focusedKeyframePhotoID.flatMap({ photos.photo($0) })?.keyframeID == nil { focusedKeyframePhotoID = nil }
+            exports.invalidate()
         }
-        if updated > 0 {
-            keyframeNotice = updated == 1 ? "Updated 1 photo to match the change." : "Updated \(updated) photos to match the change."
+        guard !jobs.isEmpty, let background else { return }
+        Task {
+            let replaced = await photoSync.rerender(jobs, background: background.image)
+            for (old, new) in replaced {
+                if focusedKeyframePhotoID == old { focusedKeyframePhotoID = new }
+                if selectedLibraryPhotoID == old { selectedLibraryPhotoID = new }
+            }
+            guard !replaced.isEmpty else { return }
+            keyframeNotice = replaced.count == 1 ? "Updated 1 photo to match the change." : "Updated \(replaced.count) photos to match the change."
             exports.invalidate()
             documentChanged()
         }
     }
 
     var canRetakeFocusedPhoto: Bool {
-        focusedKeyframePhoto?.camera != nil && background != nil && !isCapturing && captureCountdown == nil
+        focusedKeyframePhoto?.camera != nil && background != nil && !capture.isBusy
     }
 
     /// Re-shoots the selected keyframe's shown photo from exactly the same spot, using the
     /// current lens and lighting. Replaces it in place (undo brings the old one back).
     func retakeFocusedPhoto() async {
         guard canRetakeFocusedPhoto, let background, let photo = focusedKeyframePhoto,
-              var camera = photo.camera, let keyframeID = photo.keyframeID else { return }
+              let camera = photo.camera, let keyframeID = photo.keyframeID else { return }
         checkpoint()
         guard let keyframe = animator.timeline.keyframe(keyframeID),
               let number = animator.number(of: keyframeID) else { return }
-        isCapturing = true
-        defer { isCapturing = false }
-
-        camera.lens = captureLens
         let snapshot = workspace.snapshot(at: keyframe.poses, characterPoses: keyframe.characterPoses,
-                                          keyframedObjects: animator.timeline.keyframedObjectIDs)
+                                          keyframedObjects: animator.timeline.keyframedObjectIDs,
+                                          holds: animator.timeline.heldProps(at: keyframe.time))
         do {
-            let image = try await CompositionRenderer().render(
-                snapshot: snapshot, backdrop: workspace.backdrop, backdropPose: photo.backdropPose?.transform,
-                background: background.image, camera: camera, lighting: captureLighting, look: captureLook)
-            guard let replacement = photos.replace(photo, with: image, camera: camera, lighting: captureLighting,
-                                                   look: captureLook) else { return }
+            let shot = try await capture.retake(snapshot, from: camera, backdropPose: photo.backdropPose?.transform,
+                                                background: background.image)
+            guard let replacement = photos.replace(photo, with: shot.image, camera: shot.camera,
+                                                   lighting: captureLighting, look: captureLook) else { return }
             focusedKeyframePhotoID = replacement.id
             selectedLibraryPhotoID = replacement.id
-            captureStatus = .retaken(keyframeNumber: number)
+            capture.status = .retaken(keyframeNumber: number)
             exports.invalidate()
             documentChanged()
         } catch {
-            captureStatus = .failed(error.localizedDescription)
+            capture.status = .failed(error.localizedDescription)
         }
-    }
-
-    private func detachPhotos(from keyframe: Keyframe.ID) {
-        let count = photos.photos(for: keyframe).count
-        photos.detachPhotos(from: keyframe)
-        if count > 0, let number = animator.number(of: keyframe) {
-            keyframeNotice = "Keyframe \(number) changed, so its \(count == 1 ? "photo was" : "\(count) photos were") moved to the library."
-        }
-        if focusedKeyframePhotoID.flatMap({ photos.photo($0) })?.keyframeID == nil { focusedKeyframePhotoID = nil }
-        exports.invalidate()
     }
 
     /// Reorders the shots. Photos stay with their keyframes.
@@ -1616,7 +1643,7 @@ class AppModel {
         keyframeNotice = nil
         animator.step(forward: forward)
         focusedKeyframePhotoID = nil
-        captureStatus = nil
+        capture.status = nil
     }
 
     /// The timeline window is showing.
@@ -1627,7 +1654,7 @@ class AppModel {
         keyframeNotice = nil
         animator.select(keyframe)
         focusedKeyframePhotoID = nil
-        captureStatus = nil
+        capture.status = nil
         documentChanged()
     }
 
@@ -1686,7 +1713,8 @@ class AppModel {
     /// Exports an MP4 of each keyframe's primary photo, in timeline order.
     func exportSlideshow() async {
         flushAutoSave()
-        await exports.exportSlideshow(keyframes: animator.timeline.keyframes, photos: photos, title: projectName)
+        await exports.exportSlideshow(keyframes: animator.timeline.keyframes, photos: photos, title: projectName,
+                                      format: captureLook.format)
     }
 
     /// Renders the animation as video: objects move between keyframes while the camera
@@ -1700,9 +1728,11 @@ class AppModel {
         let backdropPose = timeline.keyframes.lazy
             .compactMap { self.photos.primaryPhoto(for: $0.id) }
             .first { $0.camera != nil }?.backdropPose?.transform
+        var look = captureLook
+        if !exports.animaticDepthOfField { look.depthOfField = nil }
         exports.startAnimatic(.init(timeline: timeline, cameraPath: animaticCameraPath, backdropPose: backdropPose,
-                                    background: background.image, lighting: captureLighting, look: captureLook,
-                                    title: projectName),
+                                    background: background.image, lighting: captureLighting, look: look,
+                                    title: projectName, walkers: animator.walkers),
                               workspace: workspace)
     }
 
@@ -1710,10 +1740,19 @@ class AppModel {
         exports.cancelAnimatic()
     }
 
+    /// Exports a CSV shot list: one row per keyframe with its camera settings and who's in it.
+    func exportShotList() {
+        flushAutoSave()
+        exports.exportShotList(keyframes: animator.timeline.keyframes, photos: photos,
+                               objectNames: Dictionary(uniqueKeysWithValues: objects.map { ($0.id, $0.name) }),
+                               characterIDs: Set(characters.map(\.id)), title: projectName)
+    }
+
     /// Exports a printable PDF with one numbered panel per keyframe.
     func exportStoryboardSheet() {
         flushAutoSave()
-        exports.exportStoryboardSheet(keyframes: animator.timeline.keyframes, photos: photos, title: projectName)
+        exports.exportStoryboardSheet(keyframes: animator.timeline.keyframes, photos: photos, title: projectName,
+                                      format: captureLook.format)
     }
 
     // MARK: Notes
@@ -1791,7 +1830,8 @@ class AppModel {
             return ProjectState.Object(id: summary.id, name: summary.name, source: summary.source,
                                        recipe: summary.recipe, transform: CodableTransform(entity.transform),
                                        isVisible: entity.isEnabled, characterPose: workspace.characterPose(of: entity),
-                                       hold: holds[summary.id])
+                                       hold: workspace.hold(of: entity), lookTarget: lookTargets[summary.id],
+                                       walks: animator.walkers.contains(summary.id) ? true : nil)
         }
         let generatedBy: ModelSource? = if case .generated(let source) = base.origin { source } else { nil }
 
@@ -1861,9 +1901,13 @@ class AppModel {
             summaries.append(ObjectSummary(id: object.id, name: object.name, source: object.source, recipe: object.recipe))
         }
         objects = summaries
-        holds = Dictionary(uniqueKeysWithValues: state.objects.compactMap { object in object.hold.map { (object.id, $0) } })
+        lookTargets = Dictionary(uniqueKeysWithValues: state.objects.compactMap { object in object.lookTarget.map { (object.id, $0) } })
+        animator.walkers = Set(state.objects.filter { $0.walks == true }.map(\.id))
         for summary in summaries {
-            if let entity = workspace.object(withID: summary.id) { applyHold(to: entity, id: summary.id) }
+            if let entity = workspace.object(withID: summary.id) {
+                workspace.setHold(state.objects.first { $0.id == summary.id }?.hold, on: entity)
+                applyLookTarget(to: entity, id: summary.id)
+            }
         }
         let stillSelected = selectedObjectID.flatMap { workspace.object(withID: $0) } != nil
         selectObject(stillSelected ? selectedObjectID : nil)
@@ -1875,7 +1919,7 @@ class AppModel {
         focusedKeyframePhotoID = nil
         keyframeNotice = nil
         exports.invalidate()
-        captureStatus = nil
+        capture.status = nil
         if photos.photo(selectedLibraryPhotoID) == nil { selectedLibraryPhotoID = nil }
     }
 

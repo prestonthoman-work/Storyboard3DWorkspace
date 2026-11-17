@@ -34,6 +34,10 @@ struct ProjectState: Codable, Equatable {
         /// The character and hand holding this object, if one is. Optional so projects saved
         /// before props could be held still load.
         var hold: Hold?
+        /// What this character keeps looking at, if anything. Optional so older projects load.
+        var lookTarget: ObjectID?
+        /// Whether this character walks when it moves between keyframes. Optional so older projects load.
+        var walks: Bool?
     }
 
     struct KeyframeState: Codable, Equatable {
@@ -46,6 +50,7 @@ struct ProjectState: Codable, Equatable {
         // Optional so projects saved before characters existed still load.
         var characterPoses: [ObjectID: CharacterPose]?
         var holds: Bool?
+        var heldProps: [ObjectID: Hold]?
     }
 
     struct Photo: Codable, Equatable {
@@ -96,7 +101,8 @@ struct CodableTransform: Codable, Equatable {
 extension Keyframe {
     init(_ state: ProjectState.KeyframeState) {
         self.init(id: state.id, time: state.time, poses: state.poses.mapValues(\.transform), note: state.note ?? "",
-                  shotType: state.shotType, characterPoses: state.characterPoses ?? [:], holds: state.holds ?? false)
+                  shotType: state.shotType, characterPoses: state.characterPoses ?? [:], holds: state.holds ?? false,
+                  heldProps: state.heldProps ?? [:])
     }
 }
 
@@ -105,6 +111,7 @@ extension ProjectState.KeyframeState {
         self.init(id: keyframe.id, time: keyframe.time, poses: keyframe.poses.mapValues { CodableTransform($0) },
                   note: keyframe.note.isEmpty ? nil : keyframe.note, shotType: keyframe.shotType,
                   characterPoses: keyframe.characterPoses.isEmpty ? nil : keyframe.characterPoses,
-                  holds: keyframe.holds ? true : nil)
+                  holds: keyframe.holds ? true : nil,
+                  heldProps: keyframe.heldProps.isEmpty ? nil : keyframe.heldProps)
     }
 }
