@@ -1178,6 +1178,22 @@ class AppModel {
         }
     }
 
+    /// Double-tap in the scene: selects the object and moves it to the next color, ending
+    /// with its original colors before starting over. Objects that can't be recolored
+    /// (imported models) are just selected.
+    func cycleColor(ofObjectContaining entity: Entity) {
+        selectObject(containing: entity)
+        guard let summary = selectedObject, summary.recipe.canRecolor else { return }
+        recolorSelectedObject(Self.nextColor(after: summary.recipe.colorName))
+    }
+
+    /// The color after `current` in the swatch order; after the last, nil (original colors).
+    static func nextColor(after current: String?) -> String? {
+        let names = SampleObjectCatalog.colorNames
+        guard let current, let index = names.firstIndex(of: current) else { return names.first }
+        return index + 1 < names.count ? names[index + 1] : nil
+    }
+
     /// Snap rotation to 15° steps and line objects up with each other while arranging.
     var isSnappingOn: Bool = UserDefaults.standard.object(forKey: "isSnappingOn") as? Bool ?? true {
         didSet { UserDefaults.standard.set(isSnappingOn, forKey: "isSnappingOn") }

@@ -113,6 +113,13 @@ struct ImmersiveView: View {
                 .targetedToAnyEntity()
                 .onEnded { value in appModel.selectObject(containing: value.entity) }
         )
+        // Double-tap an object to cycle its color. Alongside the single tap, so the first
+        // tap still selects right away instead of waiting to see if a second follows.
+        .simultaneousGesture(
+            SpatialTapGesture(count: 2)
+                .targetedToAnyEntity()
+                .onEnded { value in appModel.cycleColor(ofObjectContaining: value.entity) }
+        )
         .task {
             await appModel.workspaceDidOpen()
         }

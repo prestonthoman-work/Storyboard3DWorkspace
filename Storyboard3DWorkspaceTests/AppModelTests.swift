@@ -268,6 +268,22 @@ extension SharedStateTests {
             #expect(app.workflowStep == .share)
         }
 
+        @Test func doubleTapCyclesThroughColorsAndBack() async throws {
+            let app = try await makeApp()
+            app.placeCatalogObject(.house)
+            let id = try #require(app.selectedObjectID)
+            let entity = try #require(app.workspace.object(withID: id))
+            var seen: [String?] = []
+            for _ in 0...SampleObjectCatalog.colorNames.count {
+                app.cycleColor(ofObjectContaining: entity)
+                seen.append(app.objects.first { $0.id == id }?.recipe.colorName)
+            }
+            #expect(Array(seen.dropLast()) == SampleObjectCatalog.colorNames.map(Optional.some))
+            #expect(seen.last == .some(nil))
+            app.undo()
+            #expect(app.objects.first { $0.id == id }?.recipe.colorName == SampleObjectCatalog.colorNames.last)
+        }
+
         @Test func shotTypesSaveAndUndo() async throws {
             let app = try await makeApp()
             app.addKeyframe()

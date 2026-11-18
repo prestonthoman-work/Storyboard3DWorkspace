@@ -63,6 +63,7 @@ struct ObjectsPanel: View {
 
             HintRow(hints: [
                 ("hand.pinch", "Pinch and drag an object to move it"),
+                ("hand.tap", "Double-tap an object to change its color"),
                 ("arrow.trianglehead.clockwise", "Drag the ring's knob to turn it, or the corner to resize"),
             ])
         }
