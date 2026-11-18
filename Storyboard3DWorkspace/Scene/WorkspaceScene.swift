@@ -24,8 +24,12 @@ final class WorkspaceScene {
     /// Wide enough to feel unlimited, while preventing objects from collapsing to nothing.
     static let scaleRange: ClosedRange<Float> = 0.02...50
 
-    /// Where the base floats when no table is available: about 1 m ahead, near table height.
-    private static let floatingBasePosition = SIMD3<Float>(0, 0.85, -1.0)
+    /// Where the base floats when no table is available (and while one is being looked for):
+    /// 1.5 m ahead, a little below table height. The main window opens as a utility panel,
+    /// low and roughly 0.7–1 m in front of the viewer; at 1 m the base's front edge landed
+    /// right where that panel sits and covered it. This far back the panel stays in front of
+    /// the base, and the base stays low enough to be seen over the panel.
+    private static let floatingBasePosition = SIMD3<Float>(0, 0.8, -1.5)
 
 
     let root = Entity()
@@ -338,7 +342,11 @@ final class WorkspaceScene {
         if isLightingPreviewOn { refreshLightingReceivers() }
     }
 
+    /// Half the base's current diameter, in meters.
+    private(set) var baseRadius: Float = Float(BaseSizeLimits.defaultWidth) / 200
+
     func setBaseSize(_ size: Float) {
+        baseRadius = size / 2
         guard let content = baseContent, let bounds = baseNominalBounds else { return }
         let footprint = max(bounds.extents.x, bounds.extents.z, 1e-4)
         let scale = size / footprint

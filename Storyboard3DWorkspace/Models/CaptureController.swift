@@ -83,7 +83,11 @@ final class CaptureController {
 
     // MARK: Status
 
-    private(set) var isCapturing = false
+    /// True from the moment the shutter fires until the photo is rendered.
+    var isCapturing: Bool { isShutterFiring || isRendering }
+    /// The self-timer has ended and the shot is being set up, before rendering starts.
+    private var isShutterFiring = false
+    private(set) var isRendering = false
     private(set) var isSavingToPhotos = false
     private(set) var isRenderingPreview = false
     /// What the last capture did, shown under the shutter.
@@ -108,8 +112,13 @@ final class CaptureController {
                 try? await Task.sleep(for: .seconds(1))
                 if Task.isCancelled { return }
             }
+            // Swap the "1" for the developing spinner and give the interface a frame to show
+            // it before the render starts.
+            self?.isShutterFiring = true
             self?.countdown = nil
+            try? await Task.sleep(for: .milliseconds(50))
             await shutter()
+            self?.isShutterFiring = false
         }
     }
 
@@ -135,8 +144,8 @@ final class CaptureController {
     /// Photographs the scene as it is now, from where the viewer stands, with the current
     /// settings: a flash and shutter sound, then the render.
     func shoot(background: CGImage) async throws -> Shot {
-        isCapturing = true
-        defer { isCapturing = false }
+        isRendering = true
+        defer { isRendering = false }
         let camera = viewerCamera()
         workspace.flashViewfinder()
         workspace.playInterfaceSound(.shutter, gain: -4)
@@ -152,8 +161,8 @@ final class CaptureController {
     /// current lens, lighting, and look.
     func retake(_ snapshot: Entity, from camera: CaptureCamera, backdropPose: Transform?,
                 background: CGImage) async throws -> (image: CGImage, camera: CaptureCamera) {
-        isCapturing = true
-        defer { isCapturing = false }
+        isRendering = true
+        defer { isRendering = false }
         var camera = camera
         camera.lens = lens
         let image = try await CompositionRenderer().render(

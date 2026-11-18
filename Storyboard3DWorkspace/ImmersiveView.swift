@@ -154,9 +154,20 @@ private struct CountdownBadge: View {
                     .frame(width: 96, height: 96)
                     .glassBackgroundEffect(in: Circle())
                     .transition(.scale(scale: 0.6).combined(with: .opacity))
+            } else if appModel.isCapturing {
+                // After "1": the photo is rendering (several seconds with lens blur).
+                VStack(spacing: 6) {
+                    ProgressView()
+                    Text("Developing…")
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                }
+                .frame(width: 112, height: 96)
+                .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: 24))
+                .transition(.opacity)
             }
         }
         .animation(.spring(response: 0.35, dampingFraction: 0.6), value: appModel.captureCountdown)
+        .animation(.easeInOut(duration: 0.2), value: appModel.isCapturing)
     }
 }
 

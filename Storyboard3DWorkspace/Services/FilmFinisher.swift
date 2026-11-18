@@ -9,7 +9,8 @@ import CoreImage.CIFilterBuiltins
 
 /// Finishes a raw render the way a colorist would: a filmic tone curve, a soft bloom on
 /// highlights, a vignette, fine grain, and letterbox or pillarbox bars for the chosen format.
-enum FilmFinisher {
+/// Nonisolated so captures can run it off the main thread (see `CompositionRenderer.offMain`).
+nonisolated enum FilmFinisher {
     private static let context = CIContext(options: [.cacheIntermediates: false])
 
     static func finish(_ image: CGImage, look: CaptureLook, lighting: LightingPreset) -> CGImage {
@@ -123,7 +124,7 @@ enum FilmFinisher {
 }
 
 private extension LightingPreset {
-    var bloomIntensity: Float {
+    nonisolated var bloomIntensity: Float {
         switch self {
         case .studio: 0.05
         case .goldenHour: 0.12

@@ -157,7 +157,30 @@ final class CompositionRenderer {
             try await renderFrame()
             image = try Self.makeImage(from: texture)
         }
-        return FilmFinisher.finish(image, look: look, lighting: lighting)
+        return try await Self.offMain { FilmFinisher.finish(image, look: look, lighting: lighting) }
+    }
+
+    // MARK: Off the main thread
+
+    /// Holds a value while background work uses it. Taking a large buffer in and out with
+    /// `swap` keeps it uniquely owned, so it's changed in place rather than copied.
+    nonisolated final class Handoff<Value>: @unchecked Sendable {
+        var value: Value
+        init(_ value: Value) { self.value = value }
+    }
+
+    /// Runs CPU-heavy pixel work (averaging lens renders, Core Image finishing) on a
+    /// background thread and waits for it. On the main thread it froze the interface for
+    /// seconds at a time, leaving the self-timer's "1" on screen until the photo was done.
+    nonisolated static func offMain<T>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
+        let result = Handoff<Result<T, Error>?>(nil)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                result.value = Result { try work() }
+                continuation.resume()
+            }
+        }
+        return try result.value!.get()
     }
 
     // MARK: Depth of field
@@ -227,17 +250,23 @@ final class CompositionRenderer {
                                   render: () async throws -> Void) async throws -> CGImage {
         let views = apertureViews(of: captureCamera, focusDistance: plan.focusDistance, radius: plan.apertureRadius,
                                   count: plan.sampleCount)
-        accumulator.reset()
+        // The pixel math runs off the main thread; the accumulator is moved into a handoff
+        // (and back at the end) so its large buffers aren't copied.
+        let held = Handoff(Accumulator(width: 0, height: 0))
+        swap(&held.value, &accumulator)
+        defer { swap(&held.value, &accumulator) }
+        let target = Handoff(texture)
+        held.value.reset()
         for view in views {
             camera.position = view.position
             camera.orientation = view.orientation
             try await render()
-            accumulator.add(texture)
+            try await offMain { held.value.add(target.value) }
         }
         camera.position = captureCamera.position
         camera.orientation = captureCamera.orientation
-        let spacing = plan.largestBlur(height: accumulator.height) / Float(views.count).squareRoot()
-        return try accumulator.finish(smoothing: spacing * 0.6)
+        let spacing = plan.largestBlur(height: held.value.height) / Float(views.count).squareRoot()
+        return try await offMain { try held.value.finish(smoothing: spacing * 0.6) }
     }
 
     /// How far an entity is in front of the camera.
@@ -342,7 +371,7 @@ final class CompositionRenderer {
 
     /// Sums rendered frames, pixel by pixel, to average them, and tracks how much each
     /// pixel's brightness varies between them.
-    struct Accumulator {
+    nonisolated struct Accumulator {
         let width: Int
         let height: Int
         private var sums: [Float]
@@ -443,7 +472,7 @@ final class CompositionRenderer {
         }
     }
 
-    fileprivate static let ciContext = CIContext(options: [.cacheIntermediates: false])
+    nonisolated fileprivate static let ciContext = CIContext(options: [.cacheIntermediates: false])
 
     private static func stripInteraction(from entity: Entity) {
         entity.components.remove(ManipulationComponent.self)
@@ -618,7 +647,7 @@ final class CompositionRenderer {
     }
 
     /// An image from BGRA pixels, as read from the render texture.
-    fileprivate static func makeImage(bytes: [UInt8], width: Int, height: Int) throws -> CGImage {
+    nonisolated fileprivate static func makeImage(bytes: [UInt8], width: Int, height: Int) throws -> CGImage {
         let bytesPerRow = width * 4
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
               let provider = CGDataProvider(data: Data(bytes) as CFData),
@@ -741,7 +770,8 @@ extension CompositionRenderer {
                 try await renderFrame()
                 image = try CompositionRenderer.makeImage(from: texture)
             }
-            return FilmFinisher.finish(image, look: look, lighting: lighting)
+            let look = look, lighting = lighting
+            return try await CompositionRenderer.offMain { FilmFinisher.finish(image, look: look, lighting: lighting) }
         }
 
         /// Lens blur in the animatic uses fewer renders per frame than a photo, so it stays

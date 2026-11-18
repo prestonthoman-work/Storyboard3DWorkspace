@@ -436,6 +436,9 @@ class AppModel {
         let fitted = Double(min(table.width, table.depth)) * 100 * 0.9
         let stepped = (fitted / BaseSizeLimits.step).rounded(.down) * BaseSizeLimits.step
         baseWidth = min(max(stepped, BaseSizeLimits.range.lowerBound), BaseSizeLimits.range.upperBound)
+        // The base may have been pushed toward the table's far side; re-place it so the
+        // bigger base still fits on the table.
+        tableAnchoring.reseat()
     }
     var basePrompt = ""
     private(set) var isGeneratingBase = false
@@ -1444,7 +1447,7 @@ class AppModel {
 
     /// Takes the photo and files it: on the selected keyframe, or in the library.
     private func captureComposition() async {
-        guard let background, !capture.isCapturing else { return }
+        guard let background, !capture.isRendering else { return }
         checkpoint()
         // Decide the keyframe at the moment the shutter fires, and make sure it holds
         // exactly what's being photographed.

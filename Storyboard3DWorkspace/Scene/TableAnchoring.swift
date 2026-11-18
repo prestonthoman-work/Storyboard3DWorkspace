@@ -95,9 +95,64 @@ final class TableAnchoring {
         }
     }
 
+    /// Puts the base back on the table it's on, recomputing where it sits (for example after
+    /// the base is resized, so a bigger base isn't left hanging off the far edge).
+    func reseat() {
+        guard let anchored = anchoredTable, let table = tracking.tables[anchored.id] else { return }
+        anchor(to: table)
+    }
+
+    /// How far the base's near edge should be from the viewer, horizontally. The main window
+    /// opens as a utility panel, low and roughly 0.7–1 m out; a base nearer than this covers it.
+    private static let panelClearance: Float = 1.1
+    /// Keeps the base's rim this far inside the table's edges.
+    private static let edgeMargin: Float = 0.03
+
+    /// Where on the table the base goes: the center, unless that puts it in the main panel's
+    /// spot, in which case it slides away from the viewer toward the far side of the table,
+    /// as far as needed (or as far as the table allows).
+    private func baseSurface(on table: SpatialTrackingService.Table) -> simd_float4x4 {
+        let center = table.center
+        let viewer = tracking.viewerPosition
+        var away = SIMD2(center.x - viewer.x, center.z - viewer.z)
+        let distance = simd_length(away)
+        if distance > 1e-3 {
+            away /= distance
+        } else if let head = tracking.viewerTransform {
+            // Standing over the middle of the table: push it the way the viewer is facing.
+            away = SIMD2(-head.columns.2.x, -head.columns.2.z)
+            guard simd_length(away) > 1e-3 else { return table.originFromCenter }
+            away = simd_normalize(away)
+        } else {
+            return table.originFromCenter
+        }
+
+        let radius = workspace.baseRadius
+        let wanted = Self.panelClearance - (distance - radius)
+        guard wanted > 0 else { return table.originFromCenter }
+
+        // The slide direction in the table's own axes (x along its width, z along its depth).
+        let tableX = simd_normalize(SIMD2(table.originFromCenter.columns.0.x, table.originFromCenter.columns.0.z))
+        let tableZ = simd_normalize(SIMD2(table.originFromCenter.columns.2.x, table.originFromCenter.columns.2.z))
+        let alongX = abs(simd_dot(away, tableX))
+        let alongZ = abs(simd_dot(away, tableZ))
+        let roomX = max(table.width / 2 - radius - Self.edgeMargin, 0)
+        let roomZ = max(table.depth / 2 - radius - Self.edgeMargin, 0)
+        var allowed = Float.greatestFiniteMagnitude
+        if alongX > 1e-4 { allowed = min(allowed, roomX / alongX) }
+        if alongZ > 1e-4 { allowed = min(allowed, roomZ / alongZ) }
+
+        let shift = min(wanted, allowed)
+        guard shift > 0 else { return table.originFromCenter }
+        var surface = table.originFromCenter
+        surface.columns.3.x += away.x * shift
+        surface.columns.3.z += away.y * shift
+        return surface
+    }
+
     private func anchor(to table: SpatialTrackingService.Table) {
         searchTimeout?.cancel()
-        workspace.placeBase(atSurface: table.originFromCenter)
+        workspace.placeBase(atSurface: baseSurface(on: table))
         // Remember where the base sits relative to the table's stable anchor, not its
         // surface center, which drifts as more of the table is detected.
         let originFromBase = workspace.baseAnchor.transformMatrix(relativeTo: nil)
