@@ -50,7 +50,7 @@ final class TableAnchoring {
             placement = .floating(reason: "Allow access to your surroundings in Settings to place the base on a table.")
         case .unavailable:
             workspace.placeBaseFloating()
-            placement = .floating(reason: "Table detection isn't available here, so the base floats in front of you.")
+            placement = .floating(reason: "Table detection isn't available here, so the base floats beside the panel.")
         }
     }
 
@@ -102,51 +102,43 @@ final class TableAnchoring {
         anchor(to: table)
     }
 
-    /// How far the base's near edge should be from the viewer, horizontally. The main window
-    /// opens as a utility panel, low and roughly 0.7–1 m out; a base nearer than this covers it.
-    private static let panelClearance: Float = 1.1
     /// Keeps the base's rim this far inside the table's edges.
     private static let edgeMargin: Float = 0.03
 
-    /// Where on the table the base goes: the center, unless that puts it in the main panel's
-    /// spot, in which case it slides away from the viewer toward the far side of the table,
-    /// as far as needed (or as far as the table allows).
+    /// Where on the table the base goes: the spot nearest the table's center that's beside
+    /// the main panel rather than behind or in front of it, preferring the left (the
+    /// Timeline window opens to the panel's right). If the table has no such spot, the one
+    /// that leaves the most of the panel clear.
     private func baseSurface(on table: SpatialTrackingService.Table) -> simd_float4x4 {
-        let center = table.center
-        let viewer = tracking.viewerPosition
-        var away = SIMD2(center.x - viewer.x, center.z - viewer.z)
-        let distance = simd_length(away)
-        if distance > 1e-3 {
-            away /= distance
-        } else if let head = tracking.viewerTransform {
-            // Standing over the middle of the table: push it the way the viewer is facing.
-            away = SIMD2(-head.columns.2.x, -head.columns.2.z)
-            guard simd_length(away) > 1e-3 else { return table.originFromCenter }
-            away = simd_normalize(away)
-        } else {
-            return table.originFromCenter
-        }
-
         let radius = workspace.baseRadius
-        let wanted = Self.panelClearance - (distance - radius)
-        guard wanted > 0 else { return table.originFromCenter }
-
-        // The slide direction in the table's own axes (x along its width, z along its depth).
-        let tableX = simd_normalize(SIMD2(table.originFromCenter.columns.0.x, table.originFromCenter.columns.0.z))
-        let tableZ = simd_normalize(SIMD2(table.originFromCenter.columns.2.x, table.originFromCenter.columns.2.z))
-        let alongX = abs(simd_dot(away, tableX))
-        let alongZ = abs(simd_dot(away, tableZ))
+        let tableX = SIMD3(table.originFromCenter.columns.0.x, table.originFromCenter.columns.0.y, table.originFromCenter.columns.0.z)
+        let tableZ = SIMD3(table.originFromCenter.columns.2.x, table.originFromCenter.columns.2.y, table.originFromCenter.columns.2.z)
         let roomX = max(table.width / 2 - radius - Self.edgeMargin, 0)
         let roomZ = max(table.depth / 2 - radius - Self.edgeMargin, 0)
-        var allowed = Float.greatestFiniteMagnitude
-        if alongX > 1e-4 { allowed = min(allowed, roomX / alongX) }
-        if alongZ > 1e-4 { allowed = min(allowed, roomZ / alongZ) }
 
-        let shift = min(wanted, allowed)
-        guard shift > 0 else { return table.originFromCenter }
+        struct Candidate { var offset: SIMD2<Float>; var gap: Float; var isLeft: Bool }
+        var candidates: [Candidate] = []
+        let steps = 12
+        for i in -steps...steps {
+            for j in -steps...steps {
+                let offset = SIMD2(roomX * Float(i) / Float(steps), roomZ * Float(j) / Float(steps))
+                let point = table.center + simd_normalize(tableX) * offset.x + simd_normalize(tableZ) * offset.y
+                candidates.append(Candidate(offset: offset,
+                                            gap: PanelClearance.gap(baseCenter: point, radius: radius),
+                                            isLeft: point.x < 0))
+            }
+        }
+        let clear = candidates.filter { $0.gap >= 0 }
+        let nearest = { (a: Candidate, b: Candidate) in simd_length(a.offset) < simd_length(b.offset) }
+        let best = clear.filter(\.isLeft).min(by: nearest)
+            ?? clear.min(by: nearest)
+            ?? candidates.max { $0.gap < $1.gap }
+        guard let best, simd_length(best.offset) > 1e-4 else { return table.originFromCenter }
+
         var surface = table.originFromCenter
-        surface.columns.3.x += away.x * shift
-        surface.columns.3.z += away.y * shift
+        let shift = simd_normalize(tableX) * best.offset.x + simd_normalize(tableZ) * best.offset.y
+        surface.columns.3.x += shift.x
+        surface.columns.3.z += shift.z
         return surface
     }
 
@@ -158,5 +150,32 @@ final class TableAnchoring {
         let originFromBase = workspace.baseAnchor.transformMatrix(relativeTo: nil)
         anchoredTable = (table.id, table.originFromAnchor.inverse * originFromBase)
         placement = .onTable
+    }
+}
+
+/// Where the main window is, roughly, so the base can be kept beside it. The window opens
+/// as a utility panel, low and close, straight ahead of where the person stood; the
+/// immersive space's origin is that same spot, looking down -Z.
+enum PanelClearance {
+    /// Half the panel's width as an angle from the viewer (560 pt wide at about 0.8 m),
+    /// plus a little room.
+    static let panelHalfAngle: Float = 24 * .pi / 180
+
+    /// How far (in radians) the base's edge is from the panel's edge, as seen from where
+    /// the person stood: negative when the base is behind or in front of the panel.
+    static func gap(baseCenter: SIMD3<Float>, radius: Float) -> Float {
+        let flat = SIMD2(baseCenter.x, -baseCenter.z)
+        let distance = simd_length(flat)
+        guard distance > radius else { return -.pi }
+        let bearing = abs(atan2(flat.x, flat.y))
+        return bearing - asin(radius / distance) - panelHalfAngle
+    }
+
+    /// Where the base floats without a table: at a comfortable reach and table height, just
+    /// far enough left of straight ahead to clear the panel.
+    static func floatingPosition(radius: Float) -> SIMD3<Float> {
+        let distance: Float = 1.1
+        let bearing = panelHalfAngle + asin(min(radius / distance, 0.95)) + 4 * .pi / 180
+        return [-distance * sin(bearing), 0.85, -distance * cos(bearing)]
     }
 }

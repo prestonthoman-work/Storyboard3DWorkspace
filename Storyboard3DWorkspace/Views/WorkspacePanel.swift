@@ -15,16 +15,16 @@ struct WorkspacePanel: View {
         @Bindable var appModel = appModel
 
         TabView(selection: $appModel.selectedTab) {
-            Tab(WorkspaceTab.set.title, systemImage: WorkspaceTab.set.symbol, value: WorkspaceTab.set) {
+            Tab("\(WorkspaceTab.base.number). \(WorkspaceTab.base.title)", systemImage: WorkspaceTab.base.symbol, value: WorkspaceTab.base) {
                 PanelPage { SetPanel() }
             }
-            Tab(WorkspaceTab.objects.title, systemImage: WorkspaceTab.objects.symbol, value: WorkspaceTab.objects) {
+            Tab("\(WorkspaceTab.objects.number). \(WorkspaceTab.objects.title)", systemImage: WorkspaceTab.objects.symbol, value: WorkspaceTab.objects) {
                 PanelPage { ObjectsPanel() }
             }
-            Tab(WorkspaceTab.animate.title, systemImage: WorkspaceTab.animate.symbol, value: WorkspaceTab.animate) {
+            Tab("\(WorkspaceTab.animate.number). \(WorkspaceTab.animate.title)", systemImage: WorkspaceTab.animate.symbol, value: WorkspaceTab.animate) {
                 PanelPage { AnimatePanel() }
             }
-            Tab(WorkspaceTab.photos.title, systemImage: WorkspaceTab.photos.symbol, value: WorkspaceTab.photos) {
+            Tab("\(WorkspaceTab.photos.number). \(WorkspaceTab.photos.title)", systemImage: WorkspaceTab.photos.symbol, value: WorkspaceTab.photos) {
                 PanelPage { CapturePanel() }
             }
         }
@@ -35,6 +35,12 @@ struct WorkspacePanel: View {
         // The timeline window comes up with the Animate tab, so keyframes are always in reach.
         .onChange(of: appModel.selectedTab) { _, tab in
             if tab == .animate && !appModel.isTimelineWindowOpen {
+                openWindow(id: TimelineWindow.windowID)
+            }
+        }
+        // A project can reopen straight on the Animate tab.
+        .onAppear {
+            if appModel.selectedTab == .animate && !appModel.isTimelineWindowOpen {
                 openWindow(id: TimelineWindow.windowID)
             }
         }
@@ -133,7 +139,8 @@ private struct ShutterButton: View {
     }
 }
 
-/// Shared page chrome: the project's name, the way back to projects, and the guide.
+/// Shared page chrome: the way back to projects, the project's name, the workflow steps,
+/// and the guide.
 private struct PanelPage<Content: View>: View {
     @Environment(AppModel.self) private var appModel
     @ViewBuilder var content: Content
@@ -141,6 +148,7 @@ private struct PanelPage<Content: View>: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: UI.sectionSpacing) {
+                WorkflowStepper()
                 SaveErrorBanner()
                 if let notice = appModel.projectNotice {
                     HStack(spacing: 12) {
@@ -164,6 +172,10 @@ private struct PanelPage<Content: View>: View {
             .animation(.snappy, value: appModel.saveError)
             .navigationTitle(appModel.projectName)
             .toolbar {
+                // Leading, where a back button goes: saves and returns to the projects screen.
+                ToolbarItem(placement: .topBarLeading) {
+                    ToggleImmersiveSpaceButton()
+                }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if appModel.isGuideHidden {
                         Button("Show Guide", systemImage: "signpost.right") {
@@ -171,7 +183,6 @@ private struct PanelPage<Content: View>: View {
                         }
                         .help("Show the step-by-step guide")
                     }
-                    ToggleImmersiveSpaceButton()
                 }
             }
         }

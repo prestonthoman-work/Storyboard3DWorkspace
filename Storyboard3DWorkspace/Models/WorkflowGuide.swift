@@ -8,6 +8,7 @@ import Foundation
 /// The path from an empty table to a finished storyboard. The current step is worked out
 /// from the project itself, so the guide always points at what to do next.
 enum WorkflowStep: Int, CaseIterable, Comparable {
+    case placeBase
     case addObjects
     case firstKeyframe
     case secondKeyframe
@@ -17,10 +18,11 @@ enum WorkflowStep: Int, CaseIterable, Comparable {
     static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
 
     /// The steps that count toward progress; `share` means everything is done.
-    static let milestones: [WorkflowStep] = [.addObjects, .firstKeyframe, .secondKeyframe, .takePhotos]
+    static let milestones: [WorkflowStep] = [.placeBase, .addObjects, .firstKeyframe, .secondKeyframe, .takePhotos]
 
     var title: String {
         switch self {
+        case .placeBase: "Set up the base"
         case .addObjects: "Build your set"
         case .firstKeyframe: "Save your first shot"
         case .secondKeyframe: "Add a second keyframe"
@@ -31,6 +33,8 @@ enum WorkflowStep: Int, CaseIterable, Comparable {
 
     var detail: String {
         switch self {
+        case .placeBase:
+            "Look at a table so the base lands on it, or keep it where it floats. Then pick a surface and backdrop."
         case .addObjects:
             "Tap a library card to place an object, then pinch and drag it into place."
         case .firstKeyframe:
@@ -46,6 +50,7 @@ enum WorkflowStep: Int, CaseIterable, Comparable {
 
     var symbol: String {
         switch self {
+        case .placeBase: "circle.circle"
         case .addObjects: "cube"
         case .firstKeyframe: "diamond"
         case .secondKeyframe: "point.forward.to.point.capsulepath"
@@ -57,6 +62,7 @@ enum WorkflowStep: Int, CaseIterable, Comparable {
     /// Where this step is done.
     var tab: WorkspaceTab {
         switch self {
+        case .placeBase: .base
         case .addObjects: .objects
         case .firstKeyframe, .secondKeyframe, .takePhotos, .share: .animate
         }
@@ -66,7 +72,7 @@ enum WorkflowStep: Int, CaseIterable, Comparable {
 extension AppModel {
     var workflowStep: WorkflowStep {
         let keyframes = animator.timeline.keyframes
-        if objects.isEmpty { return .addObjects }
+        if objects.isEmpty { return isBaseReady ? .addObjects : .placeBase }
         if keyframes.isEmpty { return .firstKeyframe }
         if keyframes.count < 2 { return .secondKeyframe }
         let coverage = slideshowCoverage

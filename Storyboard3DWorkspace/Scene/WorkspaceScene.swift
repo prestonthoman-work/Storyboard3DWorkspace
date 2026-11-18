@@ -24,12 +24,6 @@ final class WorkspaceScene {
     /// Wide enough to feel unlimited, while preventing objects from collapsing to nothing.
     static let scaleRange: ClosedRange<Float> = 0.02...50
 
-    /// Where the base floats when no table is available (and while one is being looked for):
-    /// 1.5 m ahead, a little below table height. The main window opens as a utility panel,
-    /// low and roughly 0.7–1 m in front of the viewer; at 1 m the base's front edge landed
-    /// right where that panel sits and covered it. This far back the panel stays in front of
-    /// the base, and the base stays low enough to be seen over the panel.
-    private static let floatingBasePosition = SIMD3<Float>(0, 0.8, -1.5)
 
 
     let root = Entity()
@@ -96,7 +90,8 @@ final class WorkspaceScene {
         root.name = "WorkspaceRoot"
 
         baseAnchor.name = "BaseAnchor"
-        baseAnchor.position = Self.floatingBasePosition
+        // Beside the main panel, not behind it (see `PanelClearance`).
+        baseAnchor.position = PanelClearance.floatingPosition(radius: baseRadius)
         turntable.name = "Turntable"
         turntable.components.set(TurntableComponent())
         baseAnchor.addChild(turntable)
@@ -326,7 +321,8 @@ final class WorkspaceScene {
     }
 
     func placeBaseFloating() {
-        baseAnchor.transform = Transform(scale: .one, rotation: simd_quatf(), translation: Self.floatingBasePosition)
+        baseAnchor.transform = Transform(scale: .one, rotation: simd_quatf(),
+                                         translation: PanelClearance.floatingPosition(radius: baseRadius))
     }
 
     // MARK: Base content

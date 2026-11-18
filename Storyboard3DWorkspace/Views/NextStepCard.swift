@@ -26,11 +26,8 @@ struct NextStepCard: View {
             .frame(width: 44, height: 44)
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(step.title)
-                        .font(.headline)
-                    ProgressDots(step: step)
-                }
+                Text(step.title)
+                    .font(.headline)
                 Text(step.detail)
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -50,7 +47,7 @@ struct NextStepCard: View {
             .buttonStyle(.borderless)
             .controlSize(.mini)
             .foregroundStyle(.tertiary)
-            .help("Hide the guide. Bring it back from the projects screen.")
+            .help("Hide the guide. Show Guide at the top of the panel brings it back.")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -69,12 +66,20 @@ struct NextStepCard: View {
     @ViewBuilder
     private func action(for step: WorkflowStep) -> some View {
         if appModel.selectedTab != step.tab {
-            Button("Go") {
+            Button("Go to \(step.tab.title)", systemImage: "arrow.right") {
                 withAnimation(.snappy) { appModel.selectedTab = step.tab }
             }
-            .help("Open the \(step.tab.title) tab")
+            .help("Open step \(step.tab.number), \(step.tab.title)")
         } else {
             switch step {
+            case .placeBase:
+                Button("Looks Good", systemImage: "checkmark") {
+                    withAnimation(.snappy) {
+                        appModel.confirmBase()
+                        appModel.selectedTab = .objects
+                    }
+                }
+                .help("Keep the base where it is and move on to adding objects")
             case .addObjects:
                 EmptyView()
             case .firstKeyframe, .secondKeyframe:
@@ -102,43 +107,6 @@ struct NextStepCard: View {
                 }
                 .help("Watch the storyboard full size")
             }
-        }
-    }
-}
-
-/// Four small segments that fill as the storyboard comes together.
-private struct ProgressDots: View {
-    let step: WorkflowStep
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(WorkflowStep.milestones, id: \.self) { milestone in
-                Capsule()
-                    .fill(milestone < step ? Color.accentColor : .white.opacity(0.18))
-                    .frame(width: milestone == step ? 14 : 8, height: 4)
-            }
-        }
-        .accessibilityElement()
-        .accessibilityLabel("Step \(min(step.rawValue + 1, 4)) of 4")
-    }
-}
-
-extension WorkspaceTab {
-    var title: String {
-        switch self {
-        case .set: "Set"
-        case .objects: "Objects"
-        case .animate: "Animate"
-        case .photos: "Photos"
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .set: "square.3.layers.3d.down.right"
-        case .objects: "cube"
-        case .animate: "film"
-        case .photos: "camera"
         }
     }
 }

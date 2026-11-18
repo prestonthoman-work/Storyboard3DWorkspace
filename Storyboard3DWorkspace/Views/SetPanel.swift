@@ -10,11 +10,18 @@ import SwiftUI
 /// is, and the backdrop behind it.
 struct SetPanel: View {
     var body: some View {
-        PanelScroll {
-            TableStatusCard()
-            SurfaceSection()
-            SizeSection()
-            BackdropSection()
+        VStack(alignment: .leading, spacing: UI.sectionSpacing) {
+            PanelScroll {
+                TableStatusCard()
+                SurfaceSection()
+                SizeSection()
+                BackdropSection()
+            }
+
+            HintRow(hints: [
+                ("arrow.trianglehead.2.clockwise.rotate.90", "Drag the base's edge to spin the whole set"),
+                ("hand.tap", "Tap an object in the scene to select it, then Show in Panel to edit it"),
+            ])
         }
     }
 }
@@ -106,6 +113,8 @@ private struct SurfaceSection: View {
                     TemplateTile(template: template,
                                  isSelected: appModel.base.origin == .template(template)) {
                         appModel.applyBaseTemplate(template)
+                        // Choosing a surface is a sign the base is where they want it.
+                        appModel.confirmBase()
                     }
                 }
             }

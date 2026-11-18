@@ -252,6 +252,9 @@ extension SharedStateTests {
 
         @Test func guideFollowsProgress() async throws {
             let app = try await makeApp()
+            // Tests have no table, so the base waits for the person to accept where it is.
+            #expect(app.workflowStep == .placeBase)
+            app.confirmBase()
             #expect(app.workflowStep == .addObjects)
             app.placeCatalogObject(.rock)
             #expect(app.workflowStep == .firstKeyframe)

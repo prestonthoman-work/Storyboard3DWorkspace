@@ -79,10 +79,31 @@ struct PoseStudioView: View {
 /// control of the selected one.
 private struct PoseStudioPanel: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                // Title and the way back: poses are already in the scene, so Done just closes.
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Pose Studio")
+                            .font(.title3.weight(.semibold))
+                        Text("Changes go straight to the scene.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Button {
+                        appModel.selectedTab = .objects
+                        dismissWindow(id: PoseStudioView.windowID)
+                    } label: {
+                        Label("Done", systemImage: "checkmark")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .help("Close the Pose Studio and go back to the Objects tab")
+                }
+
                 HStack(spacing: 8) {
                     CharacterPicker()
                     Spacer(minLength: 0)

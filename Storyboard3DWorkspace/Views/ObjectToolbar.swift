@@ -6,7 +6,8 @@
 import SwiftUI
 
 /// Floats above the selected object in the scene, so common edits don't need a trip
-/// back to the panel: duplicate, recolor, delete, and deselect.
+/// back to the panel: duplicate, recolor, delete, and deselect, plus a way to open the
+/// object's full settings in the panel.
 struct ObjectToolbar: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.openWindow) private var openWindow
@@ -40,12 +41,17 @@ struct ObjectToolbar: View {
                         }
                         .symbolVariant(isShowingColors ? .fill : .none)
                     }
+                    Button("Show in Panel", systemImage: "slider.horizontal.3") {
+                        appModel.showSelectedObjectInPanel()
+                    }
+                    .help("Open this object's settings in the Objects tab")
                     Button("Delete", systemImage: "trash", role: .destructive) {
                         appModel.deleteSelectedObject()
                     }
                     Button("Done", systemImage: "xmark") {
                         appModel.selectObject(nil)
                     }
+                    .help("Deselect")
                 }
                 .labelStyle(.iconOnly)
                 .buttonBorderShape(.circle)

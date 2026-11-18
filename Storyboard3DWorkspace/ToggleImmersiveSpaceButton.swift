@@ -50,7 +50,7 @@ struct ToggleImmersiveSpaceButton: View {
             }
         } label: {
             if appModel.immersiveSpaceState == .open {
-                Label("Projects", systemImage: "square.grid.2x2")
+                Label("Projects", systemImage: "chevron.backward")
             } else {
                 Text("Enter Workspace")
             }

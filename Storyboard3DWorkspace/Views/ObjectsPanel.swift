@@ -14,6 +14,7 @@ struct ObjectsPanel: View {
         @Bindable var appModel = appModel
 
         VStack(alignment: .leading, spacing: UI.sectionSpacing) {
+            ScrollViewReader { scroller in
             PanelScroll {
                     PanelSection("Add", symbol: "plus.square.on.square") {
                         if appModel.isSampleMode {
@@ -55,6 +56,10 @@ struct ObjectsPanel: View {
                         }
                     }
             }
+            // "Show in Panel" from the scene: bring that object's row into view.
+            .onChange(of: appModel.objectToReveal) { revealRequestedObject(with: scroller) }
+            .onAppear { revealRequestedObject(with: scroller) }
+            }
 
             HintRow(hints: [
                 ("hand.pinch", "Pinch and drag an object to move it"),
@@ -68,6 +73,16 @@ struct ObjectsPanel: View {
                 renaming = nil
             }
             Button("Cancel", role: .cancel) { renaming = nil }
+        }
+    }
+
+    private func revealRequestedObject(with scroller: ScrollViewProxy) {
+        guard let id = appModel.objectToReveal else { return }
+        appModel.objectToReveal = nil
+        // Let the tab finish appearing so the row exists to scroll to.
+        Task {
+            try? await Task.sleep(for: .milliseconds(120))
+            withAnimation(.smooth) { scroller.scrollTo(id, anchor: .top) }
         }
     }
 
@@ -114,6 +129,7 @@ struct ObjectsPanel: View {
                 .background(isSelected ? AnyShapeStyle(.white.opacity(0.08)) : AnyShapeStyle(.clear),
                             in: RoundedRectangle(cornerRadius: UI.smallCorner, style: .continuous))
                 .clipShape(RoundedRectangle(cornerRadius: UI.smallCorner, style: .continuous))
+                .id(object.id)
             }
         }
     }

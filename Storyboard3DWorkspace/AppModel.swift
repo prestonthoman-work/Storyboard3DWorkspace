@@ -23,7 +23,7 @@ class AppModel {
         didSet { capture.isSpaceOpen = immersiveSpaceState == .open }
     }
 
-    var selectedTab: WorkspaceTab = .set
+    var selectedTab: WorkspaceTab = .base
 
     /// The person closed the "next step" guide. Remembered across launches.
     var isGuideHidden: Bool = UserDefaults.standard.bool(forKey: "isGuideHidden") {
@@ -289,7 +289,7 @@ class AppModel {
 
         resetToEmptyProject()
         currentProject = info
-        selectedTab = .set
+        selectedTab = .base
         saveError = nil
 
         var restoredBackdrop: BackdropImage?
@@ -331,6 +331,9 @@ class AppModel {
         }
         hasUnsavedChanges = false
         refreshProjects()
+        // Pick up where the project left off: an empty set starts at the base, otherwise
+        // at whichever step the guide says is next.
+        selectedTab = objects.isEmpty ? .base : workflowStep.tab
         return true
     }
 
@@ -350,6 +353,7 @@ class AppModel {
     }
 
     private func resetToEmptyProject() {
+        isBaseConfirmed = false
         restore(.empty)
         photos.reset()
         undoStack.removeAll()
@@ -370,6 +374,17 @@ class AppModel {
     // MARK: Table placement
 
     typealias TablePlacement = TableAnchoring.Placement
+
+    /// Set when the person says the base is where they want it (from the guide, or by
+    /// choosing a surface), so the guide moves on even when no table can be found.
+    var isBaseConfirmed = false
+
+    /// The base is ready to build on: it's on a table, or the person has accepted where it is.
+    var isBaseReady: Bool { tablePlacement == .onTable || isBaseConfirmed }
+
+    func confirmBase() {
+        isBaseConfirmed = true
+    }
 
     /// Keeps the base on a real table in the room.
     let tableAnchoring: TableAnchoring
@@ -419,6 +434,8 @@ class AppModel {
     var baseWidth: Double = BaseSizeLimits.defaultWidth {
         didSet {
             workspace.setBaseSize(baseMeters)
+            // A floating base moves out so a bigger one still clears the panel.
+            if tablePlacement != .onTable { workspace.placeBaseFloating() }
             documentChanged()
         }
     }
@@ -490,6 +507,16 @@ class AppModel {
 
     private(set) var objects: [ObjectSummary] = []
     private(set) var selectedObjectID: ObjectID?
+    /// Set when the scene asks the Objects tab to bring an object's row into view; the
+    /// panel scrolls to it and clears this.
+    var objectToReveal: ObjectID?
+
+    /// From the toolbar over an object in the scene: open the Objects tab at its row.
+    func showSelectedObjectInPanel() {
+        guard let id = selectedObjectID else { return }
+        selectedTab = .objects
+        objectToReveal = id
+    }
     var objectPrompt = ""
     private(set) var isGeneratingObject = false
     private(set) var objectNote: String?
