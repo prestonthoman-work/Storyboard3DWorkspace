@@ -128,17 +128,20 @@ struct GeneratedObjectTests {
         #expect(calls.count == 0)
     }
 
-    @Test func failuresFallBackWithTheReason() async throws {
+    @Test func failuresAreReportedInsteadOfPlacingAStandIn() async throws {
         let declined = service { throw ClaudeClient.Failure(message: "Claude wouldn't make that.") }
-        let model = try await declined.generateObject(prompt: "a fancy car")
-        #expect(model.recipe == .sampleObject(kind: "car", color: nil))
-        #expect(model.note?.hasPrefix("Claude wouldn't make that.") == true)
+        await #expect(throws: ClaudeClient.Failure.self) { try await declined.generateObject(prompt: "a fancy dragon") }
+        do {
+            _ = try await declined.generateObject(prompt: "a fancy dragon")
+        } catch {
+            #expect(error.localizedDescription == "Claude wouldn't make that.")
+        }
 
         let unknown = service { throw Failure() }
-        #expect(try await unknown.generateObject(prompt: "a dragon").note?.hasPrefix("Couldn't reach Claude.") == true)
+        await #expect(throws: ClaudeClient.Failure.self) { try await unknown.generateObject(prompt: "a dragon") }
 
         let empty = service { ObjectDesign(name: "Nothing", parts: []) }
-        #expect(try await empty.generateObject(prompt: "a dragon").recipe == .placeholder(color: nil))
+        await #expect(throws: ClaudeClient.Failure.self) { try await empty.generateObject(prompt: "a dragon") }
     }
 
     @Test func basesStillUseTemplates() async throws {

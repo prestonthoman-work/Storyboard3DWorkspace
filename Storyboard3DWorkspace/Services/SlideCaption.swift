@@ -5,11 +5,11 @@
 
 import UIKit
 
-/// Burns a storyboard caption ("SHOT 03 · WS · Car pulls in") into the lower left of a
+/// Burns a storyboard caption ("SHOT 1C · WS · Car pulls in") into the lower left of a
 /// frame, on a soft dark band so it reads over any photo.
 enum SlideCaption {
-    static func caption(number: Int, shotType: ShotType?, note: String, camera: String? = nil) -> String {
-        var parts = ["SHOT " + String(format: "%02d", number)]
+    static func caption(shot: String, shotType: ShotType?, note: String, camera: String? = nil) -> String {
+        var parts = ["SHOT " + shot]
         if let shotType { parts.append(shotType.abbreviation) }
         if let camera { parts.append(camera) }
         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)

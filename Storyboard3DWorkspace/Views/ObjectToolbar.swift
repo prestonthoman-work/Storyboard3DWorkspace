@@ -42,14 +42,6 @@ struct ObjectToolbar: View {
                         .symbolVariant(isShowingColors ? .fill : .none)
                         .help("Change color (or double-tap the object)")
                     }
-                    // Right where you're placing: turn position snapping off to place freely.
-                    Toggle(isOn: Binding(get: { appModel.isSnappingOn }, set: { appModel.isSnappingOn = $0 })) {
-                        Label("Snap", systemImage: "squareshape.split.3x3")
-                    }
-                    .toggleStyle(.button)
-                    .help(appModel.isSnappingOn ? "Snapping on: let go near a guide to line up. Tap to place freely."
-                                                : "Snapping off: objects stay exactly where you let go. Tap to turn it back on.")
-                    .accessibilityLabel("Position snapping")
                     Button("Show in Panel", systemImage: "slider.horizontal.3") {
                         appModel.showSelectedObjectInPanel()
                     }

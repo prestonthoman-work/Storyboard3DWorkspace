@@ -97,6 +97,15 @@ struct ImmersiveView: View {
                 }
                 .onEnded { _ in appModel.endTurntableDrag() }
         )
+        // The base's handle: slide the whole set along the table (or anywhere, when floating).
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .targetedToEntity(where: .has(BaseMoveGripComponent.self))
+                .onChanged { value in
+                    appModel.dragBase(to: value.convert(value.location3D, from: .local, to: .scene))
+                }
+                .onEnded { _ in appModel.endBaseDrag() }
+        )
         // Selection handles: turn or resize the selected object.
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -106,10 +115,10 @@ struct ImmersiveView: View {
                 }
                 .onEnded { _ in appModel.endHandleDrag() }
         )
-        // One tap recognizer for objects. Each tap selects right away; whether it completes a
-        // double-tap (change color) is judged against the grabs around it, so letting go and
-        // quickly grabbing again is never mistaken for one (see `ObjectTapArbiter`).
-        .gesture(
+        // Taps on objects are read from their pinches (see `ObjectTapArbiter`). This gesture is
+        // a fallback for taps that don't start one; simultaneous, so the system's grab on each
+        // object can't block it.
+        .simultaneousGesture(
             SpatialTapGesture()
                 .targetedToAnyEntity()
                 .onEnded { value in appModel.objectTapped(value.entity) }

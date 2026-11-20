@@ -143,6 +143,14 @@ final class KeyframeAnimator {
         timeline.setShotType(shotType, for: id)
     }
 
+    func setStartsScene(_ starts: Bool, for id: Keyframe.ID) {
+        timeline.setStartsScene(starts, for: id)
+    }
+
+    func setSceneTitle(_ title: String, forSceneContaining id: Keyframe.ID) {
+        timeline.setSceneTitle(title, forSceneContaining: id)
+    }
+
     func setHolds(_ holds: Bool, for id: Keyframe.ID) {
         timeline.setHolds(holds, for: id)
         applyPlayhead()

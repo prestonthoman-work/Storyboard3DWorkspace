@@ -50,8 +50,8 @@ struct WorkspacePanel: View {
     }
 }
 
-/// Always within reach under the panel: undo and redo, a shutter that works from any
-/// tab, and quick toggles for previewing the lighting and snapping.
+/// Always within reach under the panel: undo and redo, the shutter (from any tab), and two
+/// small menus for room guides and snapping.
 private struct WorkspaceOrnament: View {
     @Environment(AppModel.self) private var appModel
 
@@ -73,28 +73,24 @@ private struct WorkspaceOrnament: View {
             ShutterButton()
 
             HStack(spacing: 4) {
-                Toggle(isOn: $appModel.isLightingPreviewOn) {
-                    Label("Preview Lighting", systemImage: appModel.captureLighting.symbol)
+                Menu {
+                    Toggle("Labels", systemImage: "tag", isOn: $appModel.showsObjectLabels)
+                    Toggle("Eyelines", systemImage: "eye", isOn: $appModel.showsEyelines)
+                    Toggle("Onion Skin", systemImage: "square.on.square.dashed", isOn: $appModel.showsOnionSkin)
+                } label: {
+                    Label("Show", systemImage: "eye")
                 }
-                .help("Light the scene in your space with the \(appModel.captureLighting.name) capture lighting")
-                Toggle(isOn: $appModel.isSnappingOn) {
-                    Label("Snap Position", systemImage: "squareshape.split.3x3")
+                .help("Guides in the room: name labels, eyelines and the 180° line, and the previous shot's ghost. None appear in photos.")
+                Menu {
+                    Toggle("Snap Position", systemImage: "squareshape.split.3x3", isOn: $appModel.isSnappingOn)
+                    Toggle("Snap Rotation", systemImage: "angle", isOn: $appModel.isRotationSnappingOn)
+                } label: {
+                    Label("Snapping", systemImage: appModel.isSnappingOn || appModel.isRotationSnappingOn
+                          ? "squareshape.split.3x3" : "square.dashed")
                 }
-                .help("Line objects up with each other when you let go close to a guide. Never changes rotation. Hold Option on a keyboard to skip it for a moment.")
-                Toggle(isOn: $appModel.isRotationSnappingOn) {
-                    Label("Snap Rotation", systemImage: "angle")
-                }
-                .help("The turn and tilt rings click onto 15° steps when close to one")
-                Toggle(isOn: $appModel.showsObjectLabels) {
-                    Label("Labels", systemImage: "tag")
-                }
-                .help("Show each object's name above it in the room. Labels never appear in photos.")
-                Toggle(isOn: $appModel.showsEyelines) {
-                    Label("Eyelines", systemImage: "eye")
-                }
-                .help("Show where each character is looking, and the 180° line between two characters. Never in photos.")
+                .help("Position: line objects up when you let go near a guide. Rotation: the rings click onto 15° steps. Hold Option on a keyboard to skip for a moment.")
             }
-            .toggleStyle(.button)
+            .menuStyle(.button)
         }
         .labelStyle(.iconOnly)
         .buttonBorderShape(.circle)

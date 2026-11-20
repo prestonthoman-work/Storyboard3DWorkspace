@@ -34,6 +34,7 @@ final class TableAnchoring {
     /// Starts table detection and places the base on the nearest table once one is found.
     func start() async {
         placement = .searching
+        isManuallyPlaced = false
         await tracking.start()
         tracking.onTablesChanged = { [weak self] in self?.tablesChanged() }
 
@@ -90,15 +91,31 @@ final class TableAnchoring {
             }
             return
         }
-        if placement == .searching, let table = tracking.nearestTable(to: tracking.viewerPosition) {
+        if placement == .searching, !isManuallyPlaced, let table = tracking.nearestTable(to: tracking.viewerPosition) {
             anchor(to: table)
         }
     }
 
+    /// The person slid the base by its handle. On a table, it stays where they put it as the
+    /// table's anchor is refined (and isn't moved back by a resize); floating, it stays put.
+    func baseWasMoved() {
+        searchTimeout?.cancel()
+        isManuallyPlaced = true
+        if let anchored = anchoredTable, let table = tracking.tables[anchored.id] {
+            let originFromBase = workspace.baseAnchor.transformMatrix(relativeTo: nil)
+            anchoredTable = (anchored.id, table.originFromAnchor.inverse * originFromBase)
+        } else if placement == .searching {
+            placement = .floating(reason: "Placed by hand. Choose Find Table to set it on a table.")
+        }
+    }
+
+    /// The base was put where the person wanted it, so automatic placement leaves it alone.
+    @ObservationIgnored private var isManuallyPlaced = false
+
     /// Puts the base back on the table it's on, recomputing where it sits (for example after
     /// the base is resized, so a bigger base isn't left hanging off the far edge).
     func reseat() {
-        guard let anchored = anchoredTable, let table = tracking.tables[anchored.id] else { return }
+        guard !isManuallyPlaced, let anchored = anchoredTable, let table = tracking.tables[anchored.id] else { return }
         anchor(to: table)
     }
 
@@ -144,6 +161,7 @@ final class TableAnchoring {
 
     private func anchor(to table: SpatialTrackingService.Table) {
         searchTimeout?.cancel()
+        isManuallyPlaced = false
         workspace.placeBase(atSurface: baseSurface(on: table))
         // Remember where the base sits relative to the table's stable anchor, not its
         // surface center, which drifts as more of the table is detected.

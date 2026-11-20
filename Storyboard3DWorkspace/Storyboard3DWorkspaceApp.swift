@@ -42,6 +42,7 @@ struct Storyboard3DWorkspaceApp: App {
         SelectionFollowComponent.registerComponent()
         SelectionFollowSystem.registerSystem()
         TurntableGripComponent.registerComponent()
+        BaseMoveGripComponent.registerComponent()
         TurntableComponent.registerComponent()
         TurntableSystem.registerSystem()
         ObjectLabelComponent.registerComponent()
@@ -67,7 +68,7 @@ struct Storyboard3DWorkspaceApp: App {
             TimelineWindow()
                 .environment(appModel)
         }
-        .defaultSize(width: 1100, height: 460)
+        .defaultSize(width: 1180, height: 820)
         .windowResizability(.contentMinSize)
         .defaultWindowPlacement { _, context in
             if let main = context.windows.first(where: { $0.id == Self.mainWindowID }) {

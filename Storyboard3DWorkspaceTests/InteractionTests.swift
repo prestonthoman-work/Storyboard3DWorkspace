@@ -19,98 +19,203 @@ struct InteractionTests {
     private let tree = ObjectID()
     private let t0 = Date(timeIntervalSinceReferenceDate: 1000)
 
-    /// One quick pinch that doesn't move: the way a tap reaches the arbiter.
-    private func tap(_ arbiter: inout ObjectTapArbiter, _ object: ObjectID, at time: TimeInterval) -> ObjectTapArbiter.TapKind {
+    /// One quick pinch that doesn't move: how a tap reaches the arbiter on the headset.
+    private func tap(_ arbiter: inout ObjectTapArbiter, _ object: ObjectID, at time: TimeInterval) -> ObjectTapArbiter.TapKind? {
         let start = t0.addingTimeInterval(time)
         arbiter.pinchBegan(on: object, at: start, position: .zero, scale: 1)
-        arbiter.pinchEnded(on: object, at: start.addingTimeInterval(0.08))
-        return arbiter.tap(on: object, at: start.addingTimeInterval(0.08))
+        return arbiter.pinchEnded(on: object, at: start.addingTimeInterval(0.08))
     }
 
-    /// A pinch that carries the object `distance` meters.
+    /// A pinch that carries the object `distance` meters. Returns what its release meant.
+    @discardableResult
     private func drag(_ arbiter: inout ObjectTapArbiter, _ object: ObjectID, at time: TimeInterval,
-                      distance: Float = 0.05, duration: TimeInterval = 0.3) {
+                      distance: Float = 0.05, duration: TimeInterval = 0.3) -> ObjectTapArbiter.TapKind? {
         let start = t0.addingTimeInterval(time)
         arbiter.pinchBegan(on: object, at: start, position: .zero, scale: 1)
         arbiter.pinchMoved(on: object, position: [distance, 0, 0], scale: 1)
-        arbiter.pinchEnded(on: object, at: start.addingTimeInterval(duration))
+        return arbiter.pinchEnded(on: object, at: start.addingTimeInterval(duration))
     }
 
     @Test func deliberateDoubleTapIsRecognized() {
         var arbiter = ObjectTapArbiter()
-        let tap101 = tap(&arbiter, house, at: 0)
-        #expect(tap101 == .single)
-        let tap102 = tap(&arbiter, house, at: 0.25)
-        #expect(tap102 == .double)
+        let first = tap(&arbiter, house, at: 0)
+        let second = tap(&arbiter, house, at: 0.25)
+        let third = tap(&arbiter, house, at: 0.5)
+        #expect(first == .single)
+        #expect(second == .double)
         // A third tap starts over rather than counting as another double.
-        let tap103 = tap(&arbiter, house, at: 0.5)
-        #expect(tap103 == .single)
+        #expect(third == .single)
+    }
+
+    @Test func theTapGestureDoesNotCountATapTwice() {
+        var arbiter = ObjectTapArbiter()
+        let pinch = tap(&arbiter, house, at: 0)
+        // The same tap, reported again by the tap gesture.
+        let echo = arbiter.gestureTap(on: house, at: t0.addingTimeInterval(0.1))
+        let second = tap(&arbiter, house, at: 0.3)
+        #expect(pinch == .single)
+        #expect(echo == nil)
+        #expect(second == .double)
+    }
+
+    @Test func tapGesturesAloneStillMakeADoubleTap() {
+        // If the system never reports a pinch, the tap gesture is enough.
+        var arbiter = ObjectTapArbiter()
+        let first = arbiter.gestureTap(on: house, at: t0)
+        let second = arbiter.gestureTap(on: house, at: t0.addingTimeInterval(0.3))
+        #expect(first == .single)
+        #expect(second == .double)
     }
 
     @Test func releasingADragIsNotATap() {
         var arbiter = ObjectTapArbiter()
-        drag(&arbiter, house, at: 0)
-        let kind2029 = arbiter.tap(on: house, at: t0.addingTimeInterval(0.3))
-        #expect(kind2029 == .grabRelease)
+        let release = drag(&arbiter, house, at: 0)
+        let echo = arbiter.gestureTap(on: house, at: t0.addingTimeInterval(0.3))
+        #expect(release == nil)
+        #expect(echo == nil)
     }
 
     @Test func letGoAndQuicklyGrabAgainNeverChangesColor() {
         var arbiter = ObjectTapArbiter()
-        // Tap to select, then grab and move, let go, and immediately pinch again twice.
-        let tap104 = tap(&arbiter, house, at: 0)
-        #expect(tap104 == .single)
+        // Tap to select, then grab and move, let go, and immediately pinch again.
+        let first = tap(&arbiter, house, at: 0)
         drag(&arbiter, house, at: 0.15)
-        let kind2439 = arbiter.tap(on: house, at: t0.addingTimeInterval(0.45))
-        #expect(kind2439 == .grabRelease)
-        let tap105 = tap(&arbiter, house, at: 0.55)
-        #expect(tap105 == .single)
-        // The re-grab can't open a double-tap either, even with a quick second pinch.
+        let regrab = tap(&arbiter, house, at: 0.55)
+        // Another drag, then a quick pinch: still not a double-tap.
         drag(&arbiter, house, at: 0.75)
-        let tap106 = tap(&arbiter, house, at: 1.1)
-        #expect(tap106 == .single)
+        let after = tap(&arbiter, house, at: 1.1)
+        #expect(first == .single)
+        #expect(regrab == .single)
+        #expect(after == .single)
     }
 
     @Test func dragBetweenTapsCancelsTheDoubleTap() {
         var arbiter = ObjectTapArbiter()
-        let tap107 = tap(&arbiter, house, at: 0)
-        #expect(tap107 == .single)
+        let first = tap(&arbiter, house, at: 0)
         drag(&arbiter, house, at: 0.1, duration: 0.12)
-        let tap108 = tap(&arbiter, house, at: 0.6)
-        #expect(tap108 == .single)
+        let second = tap(&arbiter, house, at: 0.6)
+        #expect(first == .single)
+        #expect(second == .single)
     }
 
     @Test func tremorDoesNotTurnATapIntoADrag() {
         var arbiter = ObjectTapArbiter()
         arbiter.pinchBegan(on: house, at: t0, position: .zero, scale: 1)
-        let result1 = arbiter.pinchMoved(on: house, position: [0.003, 0.001, 0], scale: 1)
-        #expect(!result1)
-        arbiter.pinchEnded(on: house, at: t0.addingTimeInterval(0.1))
-        let kind3513 = arbiter.tap(on: house, at: t0.addingTimeInterval(0.1))
-        #expect(kind3513 == .single)
+        let becameDrag = arbiter.pinchMoved(on: house, position: [0.003, 0.001, 0], scale: 1)
+        let release = arbiter.pinchEnded(on: house, at: t0.addingTimeInterval(0.1))
+        #expect(!becameDrag)
+        #expect(release == .single)
     }
 
     @Test func holdingStillIsAGrabNotATap() {
         var arbiter = ObjectTapArbiter()
         arbiter.pinchBegan(on: house, at: t0, position: .zero, scale: 1)
-        arbiter.pinchEnded(on: house, at: t0.addingTimeInterval(0.8))
-        let kind3833 = arbiter.tap(on: house, at: t0.addingTimeInterval(0.8))
-        #expect(kind3833 == .grabRelease)
+        let release = arbiter.pinchEnded(on: house, at: t0.addingTimeInterval(0.8))
+        #expect(release == nil)
     }
 
     @Test func tapsOnDifferentObjectsAreNotADoubleTap() {
         var arbiter = ObjectTapArbiter()
-        let tap109 = tap(&arbiter, house, at: 0)
-        #expect(tap109 == .single)
-        let tap110 = tap(&arbiter, tree, at: 0.2)
-        #expect(tap110 == .single)
+        let first = tap(&arbiter, house, at: 0)
+        let second = tap(&arbiter, tree, at: 0.2)
+        #expect(first == .single)
+        #expect(second == .single)
     }
 
     @Test func slowTapsAreTwoSingleTaps() {
         var arbiter = ObjectTapArbiter()
-        let tap111 = tap(&arbiter, house, at: 0)
-        #expect(tap111 == .single)
-        let tap112 = tap(&arbiter, house, at: 0.7)
-        #expect(tap112 == .single)
+        let first = tap(&arbiter, house, at: 0)
+        let second = tap(&arbiter, house, at: 0.7)
+        #expect(first == .single)
+        #expect(second == .single)
+    }
+
+    @Test func doubleTapThroughTheAppChangesTheColor() async throws {
+        let app = AppModel()
+        await app.createProject()
+        app.placeCatalogObject(.house)
+        let id = try #require(app.selectedObjectID)
+        let entity = try #require(app.workspace.object(withID: id))
+        let t = Date.now
+        app.manipulationBegan(on: entity, at: t)
+        app.manipulationEnded(on: entity, at: t.addingTimeInterval(0.08))
+        app.manipulationBegan(on: entity, at: t.addingTimeInterval(0.25))
+        app.manipulationEnded(on: entity, at: t.addingTimeInterval(0.33))
+        #expect(app.objects.first { $0.id == id }?.recipe.colorName == SampleObjectCatalog.colorNames.first)
+    }
+
+    // MARK: Scenes and shot labels
+
+    @Test func shotsAreLabeledByScene() {
+        var timeline = KeyframeTimeline()
+        let a = timeline.append([:]), b = timeline.append([:]), c = timeline.append([:]), d = timeline.append([:])
+        #expect([a, b, c, d].map { timeline.label(of: $0.id)?.code } == ["1A", "1B", "1C", "1D"])
+        timeline.setStartsScene(true, for: c.id)
+        timeline.setSceneTitle("Kitchen, Night", forSceneContaining: d.id)
+        #expect([a, b, c, d].map { timeline.labels[$0.id]?.code } == ["1A", "1B", "2A", "2B"])
+        #expect(timeline.scenes.map(\.title) == ["", "Kitchen, Night"])
+        #expect(timeline.scenes.map(\.shots.count) == [2, 2])
+        // The first shot always starts scene 1.
+        timeline.setStartsScene(true, for: a.id)
+        timeline.setStartsScene(false, for: a.id)
+        #expect(timeline.label(of: a.id)?.code == "1A")
+    }
+
+    @Test func letterLabelsKeepGoingPastZ() {
+        #expect(ShotLabel.letters(for: 0) == "A")
+        #expect(ShotLabel.letters(for: 25) == "Z")
+        #expect(ShotLabel.letters(for: 26) == "AA")
+        #expect(ShotLabel.letters(for: 27) == "AB")
+    }
+
+    @Test func deletingAScenesFirstShotKeepsTheScene() {
+        var timeline = KeyframeTimeline()
+        let a = timeline.append([:]), b = timeline.append([:]), c = timeline.append([:])
+        timeline.setStartsScene(true, for: b.id)
+        timeline.setSceneTitle("Street", forSceneContaining: b.id)
+        timeline.remove(b.id)
+        #expect(timeline.label(of: c.id)?.code == "2A")
+        #expect(timeline.scenes.last?.title == "Street")
+        #expect(timeline.label(of: a.id)?.code == "1A")
+    }
+
+    @Test func scenesAreSavedWithTheProject() {
+        var keyframe = Keyframe(time: 1, poses: [:])
+        keyframe.startsScene = true
+        keyframe.sceneTitle = "Rooftop"
+        let restored = Keyframe(ProjectState.KeyframeState(keyframe))
+        #expect(restored.startsScene)
+        #expect(restored.sceneTitle == "Rooftop")
+    }
+
+    // MARK: Base and backdrop
+
+    @Test func theBaseSlidesAlongTheTableByItsHandle() {
+        let scene = WorkspaceScene()
+        let start = scene.baseAnchor.position(relativeTo: nil)
+        scene.dragBase(to: [0, 1, 0], keepingHeight: true)
+        scene.dragBase(to: [0.2, 1.3, -0.1], keepingHeight: true)
+        scene.endBaseDrag()
+        let moved = scene.baseAnchor.position(relativeTo: nil)
+        #expect(simd_distance(moved, start + [0.2, 0, -0.1]) < 1e-5)
+    }
+
+    @Test func theMoveHandleNeverAppearsInPhotos() {
+        let scene = WorkspaceScene()
+        let snapshot = CompositionRenderer.snapshot(of: scene.baseAnchor)
+        #expect(scene.baseAnchor.findEntity(named: WorkspaceScene.moveGripName) != nil)
+        #expect(snapshot.findEntity(named: WorkspaceScene.moveGripName) == nil)
+    }
+
+    @Test func theBackdropKeepsToTheBaseNotTheObjects() {
+        let scene = WorkspaceScene()
+        scene.setBase(BaseTemplateBuilder.make(.grass), size: 0.6)
+        let footprint = scene.backdrop.components[ViewerFacingBackdropComponent.self]?.footprint
+        #expect(footprint?.radius == 0.3)
+        // Moving an object far off the base doesn't change what the backdrop keeps behind.
+        let house = scene.addObject(SampleObjectCatalog.make(.house, tint: nil), name: "House")
+        house.position = [1.5, 0, 0]
+        #expect(scene.backdrop.components[ViewerFacingBackdropComponent.self]?.footprint?.radius == 0.3)
     }
 
     // MARK: Position snapping

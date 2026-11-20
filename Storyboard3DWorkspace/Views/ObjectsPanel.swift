@@ -35,7 +35,15 @@ struct ObjectsPanel: View {
                             Task { await appModel.generateObject() }
                         }
                         if let error = appModel.objectError {
-                            StatusMessage(error, kind: .error)
+                            HStack(alignment: .top, spacing: 10) {
+                                StatusMessage(error, kind: .error)
+                                Button("Try Again", systemImage: "arrow.clockwise") {
+                                    Task { await appModel.generateObject() }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(!appModel.canGenerateObject)
+                            }
                         } else if let note = appModel.objectNote {
                             StatusMessage(note)
                         }
@@ -374,12 +382,13 @@ private struct ClaudeKeyButton: View {
     @Environment(AppModel.self) private var appModel
     @State private var isEditing = false
     @State private var key = ""
-    @State private var saveFailed = false
+    @State private var problem: String?
+    @State private var isChecking = false
 
     var body: some View {
         Button {
             key = ""
-            saveFailed = false
+            problem = nil
             isEditing = true
         } label: {
             Label(appModel.isSampleMode ? "Connect Claude to Generate Objects" : "Claude API Key",
@@ -398,8 +407,8 @@ private struct ClaudeKeyButton: View {
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                if saveFailed {
-                    StatusMessage("The key couldn't be saved to the Keychain.", kind: .error)
+                if let problem {
+                    StatusMessage(problem, kind: .error)
                 }
                 HStack {
                     if appModel.hasSavedClaudeKey {
@@ -410,11 +419,23 @@ private struct ClaudeKeyButton: View {
                     }
                     Spacer()
                     Button("Cancel") { isEditing = false }
-                    Button("Save") {
-                        if appModel.saveClaudeKey(key) { isEditing = false } else { saveFailed = true }
+                    Button {
+                        Task {
+                            isChecking = true
+                            let result = await appModel.connectClaude(key: key)
+                            isChecking = false
+                            problem = result.message
+                            if result.saved && result.message == nil { isEditing = false }
+                        }
+                    } label: {
+                        if isChecking {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Connect")
+                        }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(isChecking || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             .padding(32)

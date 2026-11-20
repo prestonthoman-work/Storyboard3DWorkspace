@@ -104,7 +104,9 @@ extension SharedStateTests {
                 characterIDs: Set(app.characters.map(\.id)))
             let lines = csv.components(separatedBy: "\r\n").filter { !$0.isEmpty }
             #expect(lines.count == 3)
-            #expect(lines[0].hasPrefix("Shot,Time (s),Shot Type,Notes,Lens,Aperture,Frame"))
+            #expect(lines[0].hasPrefix("Scene,Shot,Time (s),Shot Type,Notes,Lens,Aperture,Frame"))
+            #expect(lines[1].hasPrefix("1,1A,"))
+            #expect(lines[2].hasPrefix("1,1B,"))
             #expect(lines[1].contains(#""Ana walks in, says ""hi"", waves""#))      // quoted, quotes doubled
             #expect(lines[1].contains("40 mm,f/2,Scope 2.39:1"))
             #expect(lines[1].contains(",Ana,Car,Yes"))
@@ -125,8 +127,8 @@ extension SharedStateTests {
             let photo = try #require(app.photos.add(solidImage(), lens: .portrait, keyframe: app.animator.selectedKeyframeID,
                                                      look: look))
             #expect(photo.cameraDetails == "85 mm · f/5.6 · 9:16")
-            #expect(SlideCaption.caption(number: 3, shotType: .closeUp, note: "", camera: photo.cameraDetails)
-                    == "SHOT 03  ·  CU  ·  85 mm · f/5.6 · 9:16")
+            #expect(SlideCaption.caption(shot: "2C", shotType: .closeUp, note: "", camera: photo.cameraDetails)
+                    == "SHOT 2C  ·  CU  ·  85 mm · f/5.6 · 9:16")
             app.exportStoryboardSheet()
             #expect(app.exports.exportedFile?.url.pathExtension == "pdf")
         }

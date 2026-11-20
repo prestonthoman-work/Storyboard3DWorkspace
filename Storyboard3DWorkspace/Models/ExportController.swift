@@ -92,12 +92,13 @@ final class ExportController {
         guard !isExporting else { return }
         let captions = slideshowCaptions
         let crops = cropsToFrameShape
-        let slides: [CGImage] = keyframes.enumerated().compactMap { index, keyframe in
+        let labels = KeyframeTimeline(keyframes: keyframes).labels
+        let slides: [CGImage] = keyframes.compactMap { keyframe in
             guard let photo = photos.primaryPhoto(for: keyframe.id), var image = photos.image(for: photo)?.cgImage
             else { return nil }
             if crops { image = Self.picture(of: image, format: photo.look.format) }
             guard captions else { return image }
-            return SlideCaption.burn(SlideCaption.caption(number: index + 1, shotType: keyframe.shotType,
+            return SlideCaption.burn(SlideCaption.caption(shot: labels[keyframe.id]?.code ?? "", shotType: keyframe.shotType,
                                                           note: keyframe.note, camera: photo.cameraDetails), into: image)
         }
         guard !slides.isEmpty else { return }
@@ -214,10 +215,11 @@ final class ExportController {
         exportedFile = nil
 
         let crops = cropsToFrameShape
-        let panels = keyframes.enumerated().map { index, keyframe in
+        let labels = KeyframeTimeline(keyframes: keyframes).labels
+        let panels = keyframes.map { keyframe in
             let photo = photos.primaryPhoto(for: keyframe.id)
             return StoryboardSheetExporter.Panel(
-                number: index + 1,
+                label: labels[keyframe.id]?.code ?? "",
                 image: photo.flatMap { photo in
                     photos.image(for: photo).map { image in
                         guard crops, let cgImage = image.cgImage else { return image }
@@ -252,14 +254,22 @@ final class ExportController {
     /// notes, the primary photo's camera settings and lighting, and who's in the shot.
     static func shotListCSV(keyframes: [Keyframe], photos: PhotoLibrary, objectNames: [ObjectID: String],
                             characterIDs: Set<ObjectID>) -> String {
-        let header = ["Shot", "Time (s)", "Shot Type", "Notes", "Lens", "Aperture", "Frame", "Lighting",
+        let header = ["Scene", "Shot", "Time (s)", "Shot Type", "Notes", "Lens", "Aperture", "Frame", "Lighting",
                       "Characters", "Objects", "Photo"]
-        let rows = keyframes.enumerated().map { index, keyframe -> [String] in
+        let timeline = KeyframeTimeline(keyframes: keyframes)
+        let labels = timeline.labels
+        let sceneTitles = Dictionary(uniqueKeysWithValues: timeline.scenes.map { ($0.number, $0.title) })
+        let rows = keyframes.map { keyframe -> [String] in
+            let label = labels[keyframe.id]
             let photo = photos.primaryPhoto(for: keyframe.id)
             let inShot = keyframe.poses.keys.compactMap { id in objectNames[id].map { (id, $0) } }
                 .sorted { $0.1.localizedStandardCompare($1.1) == .orderedAscending }
             return [
-                String(index + 1),
+                label.map { scene in
+                    let title = sceneTitles[scene.scene] ?? ""
+                    return title.isEmpty ? String(scene.scene) : "\(scene.scene) \(title)"
+                } ?? "",
+                label?.code ?? "",
                 keyframe.time.formatted(.number.precision(.fractionLength(1))),
                 keyframe.shotType?.name ?? "",
                 keyframe.note.trimmingCharacters(in: .whitespacesAndNewlines),

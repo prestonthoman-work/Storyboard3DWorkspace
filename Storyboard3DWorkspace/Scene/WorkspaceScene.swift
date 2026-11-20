@@ -21,6 +21,7 @@ import UIKit
 final class WorkspaceScene {
     static let selectionIndicatorName = "SelectionIndicator"
     static let onionSkinName = "OnionSkin"
+    static let moveGripName = "BaseMoveGrip"
     /// Wide enough to feel unlimited, while preventing objects from collapsing to nothing.
     static let scaleRange: ClosedRange<Float> = 0.02...50
 
@@ -32,6 +33,11 @@ final class WorkspaceScene {
     /// Spins the base and everything on it, without disturbing where the base is placed.
     let turntable = Entity()
     private let turntableGrip = Turntable.makeGrip()
+    /// A brass pull at the base's edge, turned toward the viewer: drag it to slide the whole set.
+    /// Never in photos.
+    let moveGrip = WorkspaceScene.makeMoveGrip()
+    private let moveGripPivot = Entity()
+    private var baseDrag: (startPoint: SIMD3<Float>, startPosition: SIMD3<Float>, keepsHeight: Bool)?
     private var turntableDrag: (pointerAngle: Float, time: Date)?
     let backdrop = ModelEntity()
     /// A head-locked frame outlining exactly what a capture will include.
@@ -111,6 +117,9 @@ final class WorkspaceScene {
         turntable.components.set(TurntableComponent())
         baseAnchor.addChild(turntable)
         baseAnchor.addChild(turntableGrip)
+        moveGripPivot.name = "MoveGripPivot"
+        moveGripPivot.addChild(moveGrip)
+        baseAnchor.addChild(moveGripPivot)
         turntable.addChild(baseHolder)
         objectsContainer.name = "Objects"
         turntable.addChild(objectsContainer)
@@ -342,11 +351,65 @@ final class WorkspaceScene {
         if simd_length(edge) < 1e-4 { edge = [1, 0, 0] }
         let yaw = atan2(-edge.z, edge.x)
         baseAnchor.transform = Transform(scale: .one, rotation: simd_quatf(angle: yaw, axis: [0, 1, 0]), translation: position)
+        aimMoveGripAtViewer()
     }
 
     func placeBaseFloating() {
         baseAnchor.transform = Transform(scale: .one, rotation: simd_quatf(),
                                          translation: PanelClearance.floatingPosition(radius: baseRadius))
+        aimMoveGripAtViewer()
+    }
+
+    // MARK: Moving the base
+
+    /// Slides the base to follow a pinch on its move handle at `point` (world space). On a table
+    /// it slides along the tabletop; floating, it moves freely.
+    /// - Returns: True on the first update of a drag.
+    @discardableResult
+    func dragBase(to point: SIMD3<Float>, keepingHeight: Bool) -> Bool {
+        guard let drag = baseDrag else {
+            baseDrag = (point, baseAnchor.position(relativeTo: nil), keepingHeight)
+            SoundEffects.play(.grab, on: moveGrip, gain: -16)
+            return true
+        }
+        var offset = point - drag.startPoint
+        if drag.keepsHeight { offset.y = 0 }
+        baseAnchor.setPosition(drag.startPosition + offset, relativeTo: nil)
+        return false
+    }
+
+    func endBaseDrag() {
+        baseDrag = nil
+        aimMoveGripAtViewer()
+    }
+
+    /// Turns the move handle to the side of the base nearest the viewer, so it's always in reach.
+    func aimMoveGripAtViewer() {
+        let viewer = SpatialTrackingService.shared.viewerPosition
+        let local = baseAnchor.convert(position: viewer, from: nil)
+        guard simd_length(SIMD2(local.x, local.z)) > 0.05 else { return }
+        moveGripPivot.orientation = simd_quatf(angle: atan2(local.x, local.z), axis: [0, 1, 0])
+    }
+
+    private static func makeMoveGrip() -> ModelEntity {
+        let grip = ModelEntity()
+        grip.name = moveGripName
+        let brass = LowPoly.material(UIColor(red: 0.74, green: 0.6, blue: 0.38, alpha: 1), .metal)
+        // A drawer pull: a bar on two short posts, standing off the plinth's edge.
+        let bar = ModelEntity(mesh: .generateBox(size: [0.06, 0.008, 0.008], cornerRadius: 0.0035), materials: [brass])
+        bar.position = [0, 0, 0.012]
+        grip.addChild(bar)
+        for x: Float in [-0.024, 0.024] {
+            let post = ModelEntity(mesh: .generateBox(size: [0.006, 0.006, 0.014], cornerRadius: 0.002), materials: [brass])
+            post.position = [x, 0, 0.004]
+            grip.addChild(post)
+        }
+        grip.components.set(BaseMoveGripComponent())
+        grip.components.set(InputTargetComponent())
+        grip.components.set(CollisionComponent(shapes: [ShapeResource.generateBox(size: [0.1, 0.05, 0.06])
+            .offsetBy(translation: [0, 0, 0.01])]))
+        grip.components.set(InteractionStyle.hover)
+        return grip
     }
 
     // MARK: Base content
@@ -379,6 +442,9 @@ final class WorkspaceScene {
         // The grip is modeled for a 1 m base; match its size and height to this one.
         turntableGrip.scale = [size, height / 0.04, size]
         objectsContainer.components.set(GravitySurfaceComponent(baseRadius: size / 2, baseHeight: height))
+        // The backdrop keeps to the base itself, about where a figure's middle is.
+        backdrop.components[ViewerFacingBackdropComponent.self]?.footprint = (size / 2, height + 0.08)
+        moveGrip.position = [0, height * 0.5, size / 2 + 0.028]
     }
 
     // MARK: Objects
@@ -978,3 +1044,6 @@ final class WorkspaceScene {
         }
     }
 }
+
+/// Marks the base's move handle.
+struct BaseMoveGripComponent: Component {}

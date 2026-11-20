@@ -39,6 +39,10 @@ enum BackdropLayout {
 struct ViewerFacingBackdropComponent: Component {
     /// The entity the backdrop sits behind. Only the backdrop moves; the target is never changed.
     var target: Entity?
+    /// The set's own footprint on the target: its radius, and the height of the scene's middle
+    /// above the target. When set, the backdrop sits behind this fixed footprint, so moving an
+    /// object out past the base never pushes the image away.
+    var footprint: (radius: Float, centerHeight: Float)?
     /// Set from `BackdropLayout.lift(forHeight:)` whenever the image changes.
     var lift: Float = BackdropLayout.preferredLift
     /// Higher values follow the viewer more tightly; lower values glide more.
@@ -64,9 +68,16 @@ struct ViewerFacingBackdropSystem: System {
                   let target = component.target
             else { continue }
 
-            let bounds = target.visualBounds(relativeTo: nil, excludeInactive: true)
-            let center = bounds.isEmpty ? target.position(relativeTo: nil) : bounds.center
-            let radius = bounds.isEmpty ? 0 : length(bounds.extents) / 2
+            let center: SIMD3<Float>
+            let radius: Float
+            if let footprint = component.footprint {
+                center = target.position(relativeTo: nil) + [0, footprint.centerHeight, 0]
+                radius = footprint.radius
+            } else {
+                let bounds = target.visualBounds(relativeTo: nil, excludeInactive: true)
+                center = bounds.isEmpty ? target.position(relativeTo: nil) : bounds.center
+                radius = bounds.isEmpty ? 0 : length(bounds.extents) / 2
+            }
 
             var direction = center - viewer
             if length(direction) < 0.05 { direction = [0, 0, -1] }

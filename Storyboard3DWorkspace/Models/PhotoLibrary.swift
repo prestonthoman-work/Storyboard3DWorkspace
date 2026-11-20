@@ -159,6 +159,17 @@ final class PhotoLibrary {
         primaryPhotoIDs[keyframe] = photo.id
     }
 
+    /// Attaches a photo to a shot and makes it the shot's picture in the storyboard.
+    func assign(_ photo: CapturedPhoto, to keyframe: Keyframe.ID) {
+        guard let index = photos.firstIndex(where: { $0.id == photo.id }) else { return }
+        if let old = photos[index].keyframeID, old != keyframe, primaryPhotoIDs[old] == photo.id {
+            photos[index].assignment = .keyframe(keyframe)
+            primaryPhotoIDs[old] = photos(for: old).first?.id
+        }
+        photos[index].assignment = .keyframe(keyframe)
+        primaryPhotoIDs[keyframe] = photo.id
+    }
+
     /// The keyframe changed or was deleted: its photos no longer represent it.
     func detachPhotos(from keyframe: Keyframe.ID) {
         for index in photos.indices where photos[index].keyframeID == keyframe {

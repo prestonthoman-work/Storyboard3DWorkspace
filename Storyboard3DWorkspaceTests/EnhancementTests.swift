@@ -37,8 +37,8 @@ struct CameraPathTests {
 @MainActor
 struct SlideCaptionTests {
     @Test func captionReadsLikeAStoryboardPanel() {
-        #expect(SlideCaption.caption(number: 3, shotType: .closeUp, note: " Car pulls in ") == "SHOT 03  ·  CU  ·  Car pulls in")
-        #expect(SlideCaption.caption(number: 12, shotType: nil, note: "") == "SHOT 12")
+        #expect(SlideCaption.caption(shot: "1C", shotType: .closeUp, note: " Car pulls in ") == "SHOT 1C  ·  CU  ·  Car pulls in")
+        #expect(SlideCaption.caption(shot: "3A", shotType: nil, note: "") == "SHOT 3A")
     }
 
     @Test func burningKeepsTheFrameSize() throws {

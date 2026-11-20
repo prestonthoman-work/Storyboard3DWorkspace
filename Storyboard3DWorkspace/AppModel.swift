@@ -102,6 +102,18 @@ class AppModel {
         return ClaudeAPIKey.save(key)
     }
 
+    /// Checks a key with Claude, then saves it. Returns why it wasn't saved, or nil once it's
+    /// connected. A key Claude rejects isn't saved; one that can't be checked (no internet)
+    /// is saved anyway, with a note.
+    func connectClaude(key: String) async -> (saved: Bool, message: String?) {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let problem = await ClaudeClient().verify(apiKey: key)
+        let offline = problem?.hasPrefix("Couldn't reach") ?? false
+        guard problem == nil || offline else { return (false, problem) }
+        guard saveClaudeKey(key) else { return (false, "The key couldn't be saved to the Keychain.") }
+        return (true, problem)
+    }
+
     func removeClaudeKey() {
         ClaudeAPIKey.remove()
         claudeKeyRevision += 1
@@ -1191,11 +1203,15 @@ class AppModel {
     /// A tap on an object in the scene: one selects it, a deliberate double-tap also changes
     /// its color. The release of a grab, or a quick re-grab, never counts toward a double-tap.
     func objectTapped(_ entity: Entity, at time: Date = .now) {
-        guard let object = workspace.object(containing: entity), let id = workspace.objectID(of: object) else { return }
-        switch tapArbiter.tap(on: id, at: time) {
-        case .single: selectObject(id)
+        guard let object = workspace.object(containing: entity), let id = workspace.objectID(of: object),
+              let kind = tapArbiter.gestureTap(on: id, at: time) else { return }
+        handleTap(kind, on: object)
+    }
+
+    private func handleTap(_ kind: ObjectTapArbiter.TapKind, on object: Entity) {
+        switch kind {
+        case .single: selectObject(workspace.objectID(of: object))
         case .double: cycleColor(ofObjectContaining: object)
-        case .grabRelease: break
         }
     }
 
@@ -1246,6 +1262,18 @@ class AppModel {
         }
     }
 
+    /// A pinch on the base's move handle moved to `point` (world space): slide the set.
+    func dragBase(to point: SIMD3<Float>) {
+        if workspace.dragBase(to: point, keepingHeight: tablePlacement == .onTable) {
+            animator.pause()
+        }
+    }
+
+    func endBaseDrag() {
+        workspace.endBaseDrag()
+        tableAnchoring.baseWasMoved()
+    }
+
     func endTurntableDrag() {
         workspace.endTurntableDrag()
         // Saves once any coasting stops.
@@ -1281,10 +1309,12 @@ class AppModel {
     /// The user let go of an object: it lands on the previewed alignment, if any. A held
     /// object keeps its new place in the hand.
     func manipulationEnded(on entity: Entity, at time: Date = .now) {
-        if let object = workspace.object(containing: entity), let id = workspace.objectID(of: object) {
-            tapArbiter.pinchEnded(on: id, at: time)
-        }
         workspace.endMove(of: entity, snapping: isSnappingOn && !isSnappingBypassed)
+        // A quick pinch that didn't move is a tap; a second one soon after changes the color.
+        if let object = workspace.object(containing: entity), let id = workspace.objectID(of: object),
+           let tap = tapArbiter.pinchEnded(on: id, at: time) {
+            handleTap(tap, on: object)
+        }
         guard let object = workspace.object(containing: entity),
               var hold = workspace.hold(of: object), let wrist = HeldProps.wrist(for: hold, near: object) else { return }
         hold.offset = CodableTransform(HeldProps.offset(of: object, from: wrist))
@@ -1847,6 +1877,19 @@ class AppModel {
         }
     }
 
+    /// Library: use a photo as a shot's picture in the storyboard.
+    func usePhoto(_ photo: CapturedPhoto, forShot id: Keyframe.ID) {
+        guard photo.keyframeID != id || !photos.isPrimary(photo) else { return }
+        checkpoint()
+        photos.assign(photo, to: id)
+        exports.invalidate()
+        documentChanged()
+    }
+
+    /// Which view the storyboard window shows.
+    enum StoryboardMode: Hashable { case storyboard, library }
+    var storyboardMode: StoryboardMode = .storyboard
+
     func setPrimaryPhoto(_ photo: CapturedPhoto) {
         checkpoint()
         photos.setPrimary(photo)
@@ -1950,6 +1993,43 @@ class AppModel {
         guard let keyframe = animator.timeline.keyframe(id), keyframe.holds != holds else { return }
         checkpoint()
         animator.setHolds(holds, for: id)
+        exports.invalidate()
+        documentChanged()
+    }
+
+    // MARK: Scenes and shot labels
+
+    /// "1A", for lists, photos, and exports.
+    func shotCode(_ id: Keyframe.ID) -> String {
+        animator.timeline.label(of: id)?.code ?? "–"
+    }
+
+    /// The label of the shot with this 1-based number (as captures report it).
+    func shotCode(number: Int) -> String {
+        let keyframes = animator.timeline.keyframes
+        guard keyframes.indices.contains(number - 1) else { return "\(number)" }
+        return shotCode(keyframes[number - 1].id)
+    }
+
+    /// Starts a new scene with a new shot, holding the scene as it is now.
+    func addScene() {
+        addKeyframe()
+        if let id = animator.selectedKeyframeID { animator.setStartsScene(true, for: id) }
+        documentChanged()
+    }
+
+    func setStartsScene(_ starts: Bool, forKeyframe id: Keyframe.ID) {
+        guard let index = animator.timeline.index(of: id), index > 0,
+              animator.timeline.keyframes[index].startsScene != starts else { return }
+        checkpoint()
+        animator.setStartsScene(starts, for: id)
+        exports.invalidate()
+        documentChanged()
+    }
+
+    func setSceneTitle(_ title: String, forSceneContaining id: Keyframe.ID) {
+        checkpoint()
+        animator.setSceneTitle(title, forSceneContaining: id)
         exports.invalidate()
         documentChanged()
     }

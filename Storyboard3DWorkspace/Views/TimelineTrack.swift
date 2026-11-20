@@ -174,7 +174,7 @@ struct TimelineTrack: View {
                 }
         )
         .accessibilityElement()
-        .accessibilityLabel("Keyframe \(number), \(keyframe.time.formatted(.number.precision(.fractionLength(1)))) seconds")
+        .accessibilityLabel("Shot \(appModel.shotCode(keyframe.id)), \(keyframe.time.formatted(.number.precision(.fractionLength(1)))) seconds")
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction { appModel.selectKeyframe(keyframe) }
     }
@@ -255,11 +255,6 @@ struct KeyframeTransport: View {
             .toggleStyle(.button)
             .help("Play over and over")
 
-            Toggle(isOn: $appModel.showsOnionSkin) {
-                Label("Onion Skin", systemImage: "square.on.square.dashed")
-            }
-            .toggleStyle(.button)
-            .help("Show a faint ghost of the previous keyframe while you edit")
 
             Text(String(format: "%.1f s / %.1f s", animator.playhead, animator.timeline.duration))
                 .font(.callout.monospacedDigit())
@@ -291,13 +286,13 @@ struct KeyframeStatusLine: View {
     var body: some View {
         let (text, symbol, tint): (String, String, Color) = switch appModel.animator.position {
         case .empty:
-            ("Arrange the scene, then add your first keyframe.", "plus.diamond", .secondary)
+            ("Arrange the set, then add your first shot.", "plus.diamond", .secondary)
         case .playing:
-            ("Playing. Pause or tap a keyframe to edit.", "play.fill", .secondary)
+            ("Playing. Pause or choose a shot to edit.", "play.fill", .secondary)
         case .onKeyframe(let number):
-            ("Editing keyframe \(number). Changes save automatically.", "pencil.circle.fill", .green)
+            ("Editing shot \(appModel.shotCode(number: number)). Changes save automatically.", "pencil.circle.fill", .green)
         case .between(let previous, let next):
-            ("Between keyframes \(previous) and \(next). Moving something adds a keyframe here.", "diamond", .orange)
+            ("Between shots \(appModel.shotCode(number: previous)) and \(appModel.shotCode(number: next)). Moving something adds a shot here.", "diamond", .orange)
         }
 
         Label(text, systemImage: symbol)

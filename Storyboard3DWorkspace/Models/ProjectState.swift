@@ -51,6 +51,8 @@ struct ProjectState: Codable, Equatable {
         var characterPoses: [ObjectID: CharacterPose]?
         var holds: Bool?
         var heldProps: [ObjectID: Hold]?
+        var startsScene: Bool?
+        var sceneTitle: String?
     }
 
     struct Photo: Codable, Equatable {
@@ -102,7 +104,8 @@ extension Keyframe {
     init(_ state: ProjectState.KeyframeState) {
         self.init(id: state.id, time: state.time, poses: state.poses.mapValues(\.transform), note: state.note ?? "",
                   shotType: state.shotType, characterPoses: state.characterPoses ?? [:], holds: state.holds ?? false,
-                  heldProps: state.heldProps ?? [:])
+                  heldProps: state.heldProps ?? [:], startsScene: state.startsScene ?? false,
+                  sceneTitle: state.sceneTitle ?? "")
     }
 }
 
@@ -112,6 +115,8 @@ extension ProjectState.KeyframeState {
                   note: keyframe.note.isEmpty ? nil : keyframe.note, shotType: keyframe.shotType,
                   characterPoses: keyframe.characterPoses.isEmpty ? nil : keyframe.characterPoses,
                   holds: keyframe.holds ? true : nil,
-                  heldProps: keyframe.heldProps.isEmpty ? nil : keyframe.heldProps)
+                  heldProps: keyframe.heldProps.isEmpty ? nil : keyframe.heldProps,
+                  startsScene: keyframe.startsScene ? true : nil,
+                  sceneTitle: keyframe.sceneTitle.isEmpty ? nil : keyframe.sceneTitle)
     }
 }

@@ -5,8 +5,8 @@
 
 import SwiftUI
 
-/// Keyframes and their photos together: the timeline up top, the selected keyframe's
-/// photo and notes with a camera to shoot it, and the storyboard of every keyframe.
+/// The selected shot: its photo, notes, shot type, and camera. The storyboard window (which
+/// opens with this tab) shows every shot; this panel edits one.
 struct AnimatePanel: View {
     @Environment(AppModel.self) private var appModel
 
@@ -15,34 +15,22 @@ struct AnimatePanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: UI.sectionSpacing) {
             if animator.timeline.keyframes.isEmpty {
-                EmptyState(symbol: "diamond",
-                           title: "No keyframes yet",
-                           message: "Arrange the scene, then add a keyframe to save it as your first shot. Move things and add another, and playback glides between them.") {
-                    HStack(spacing: 12) {
-                        AddKeyframeButton(title: "Add First Keyframe")
-                            .controlSize(.large)
-                        TimelineWindowButton()
-                    }
+                EmptyState(symbol: "rectangle.split.2x2",
+                           title: "No shots yet",
+                           message: "Arrange the set, then add a shot to save it as panel 1A. Move things and add another, and playback glides between them.") {
+                    AddKeyframeButton(title: "Add First Shot")
+                        .controlSize(.large)
                 }
             } else {
-                // With the Timeline window open, the panel focuses on the selected keyframe
-                // instead of repeating the track and storyboard shown there.
                 PanelScroll {
-                    if appModel.isTimelineWindowOpen {
-                        KeyframeStatusLine()
-                            .padding(.horizontal, 4)
-                    } else {
-                        TimelineSection()
+                    if !appModel.isTimelineWindowOpen {
+                        StoryboardWindowButton()
                     }
                     SelectedKeyframeShot()
-                    if !appModel.isTimelineWindowOpen {
-                        ShotList()
-                    }
                 }
-                .animation(.smooth, value: appModel.isTimelineWindowOpen)
 
                 ActionBar {
-                    AddKeyframeButton()
+                    if !appModel.isTimelineWindowOpen { AddKeyframeButton() }
                     Spacer(minLength: 0)
                     ExportButton()
                 }
@@ -52,40 +40,19 @@ struct AnimatePanel: View {
     }
 }
 
-/// Opens the large timeline window, or shows that it's already open.
-struct TimelineWindowButton: View {
-    @Environment(AppModel.self) private var appModel
+/// Brings the storyboard window back after it's been closed.
+struct StoryboardWindowButton: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Button {
             openWindow(id: TimelineWindow.windowID)
         } label: {
-            Label(appModel.isTimelineWindowOpen ? "Timeline Open" : "Open Timeline",
-                  systemImage: "rectangle.expand.vertical")
+            Label("Open Storyboard", systemImage: "rectangle.split.2x2")
+                .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
-        .disabled(appModel.isTimelineWindowOpen)
-        .help("Open the large timeline window")
-    }
-}
-
-/// Transport, a compact track, and what an edit will do right now.
-private struct TimelineSection: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                KeyframeTransport()
-                Spacer(minLength: 8)
-                TimelineWindowButton()
-                    .labelStyle(.iconOnly)
-                    .buttonBorderShape(.circle)
-            }
-            TimelineTrack()
-            KeyframeStatusLine()
-        }
-        .padding(UI.sectionPadding)
-        .platter()
+        .help("See every shot, scene by scene, with playback and the photo library")
     }
 }
 
@@ -95,11 +62,11 @@ private struct SelectedKeyframeShot: View {
 
     var body: some View {
         if let keyframe = appModel.animator.selectedKeyframe,
-           let number = appModel.animator.number(of: keyframe.id) {
+           appModel.animator.number(of: keyframe.id) != nil {
             let keyframePhotos = appModel.photos.photos(for: keyframe.id)
             let focused = appModel.focusedKeyframePhoto
 
-            PanelSection("Keyframe \(number)", symbol: "diamond.fill") {
+            PanelSection("Shot \(appModel.shotCode(keyframe.id))", symbol: "rectangle.on.rectangle") {
                 Text(keyframe.time.formatted(.number.precision(.fractionLength(1))) + " s")
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -111,7 +78,7 @@ private struct SelectedKeyframeShot: View {
                         VStack(spacing: 8) {
                             Image(systemName: "camera.viewfinder")
                                 .font(.largeTitle.weight(.light))
-                            Text("Frame the shot in your view, then take a photo.")
+                            Text("Frame the shot in your view, then press the shutter below the panel.")
                                 .font(.callout)
                                 .multilineTextAlignment(.center)
                         }
@@ -151,20 +118,17 @@ private struct SelectedKeyframeShot: View {
                 }
 
                 if appModel.animator.timeline.keyframes.last?.id != keyframe.id {
-                    Picker("Into the next keyframe", selection: Binding(
+                    Picker("Into the next shot", selection: Binding(
                         get: { keyframe.holds },
                         set: { appModel.setHolds($0, forKeyframe: keyframe.id) })) {
                         Label("Ease", systemImage: "point.topleft.down.to.point.bottomright.curvepath").tag(false)
                         Label("Hold, then Cut", systemImage: "square.split.2x1").tag(true)
                     }
                     .pickerStyle(.segmented)
-                    .help("Ease moves everything smoothly to the next keyframe. Hold keeps this pose until the next keyframe, for storyboards made of distinct poses.")
+                    .help("Ease moves everything smoothly to the next shot. Hold keeps this pose until the next shot, for storyboards made of distinct poses.")
                 }
 
-                BackdropVisibilityControl()
-                CaptureControls(shutterTitle: "Take Photo") {
-                    appModel.takePhotoForSelectedKeyframe()
-                }
+                CaptureControls()
                 CaptureStatusLine()
 
                 if let notice = appModel.keyframeNotice, !appModel.isUpdatingPhotos {
@@ -172,7 +136,7 @@ private struct SelectedKeyframeShot: View {
                 }
 
                 @Bindable var appModel = appModel
-                Toggle("Re-shoot photos when this keyframe changes", isOn: $appModel.keepPhotosInSync)
+                Toggle("Re-shoot photos when this shot changes", isOn: $appModel.keepPhotosInSync)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .help("Re-render a keyframe's photos from their saved angles when you change it. Off: they move to the library.")
@@ -182,7 +146,7 @@ private struct SelectedKeyframeShot: View {
                 Image(systemName: "hand.tap")
                     .font(.title3)
                     .foregroundStyle(.secondary)
-                Text("Tap a diamond or a shot to edit that keyframe and take its photo.")
+                Text("Choose a shot in the storyboard to edit it and take its photo.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -398,7 +362,7 @@ private struct SlideshowExportStatus: View {
             }
             .buttonStyle(.bordered)
         } else if coverage.total > 0, coverage.withPhoto < coverage.total {
-            Text("\(coverage.withPhoto) of \(coverage.total) keyframes have a photo. Exports skip the rest.")
+            Text("\(coverage.withPhoto) of \(coverage.total) shots have a photo. Exports skip the rest.")
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
         }

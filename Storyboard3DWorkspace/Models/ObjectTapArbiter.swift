@@ -8,11 +8,10 @@ import simd
 
 /// Tells a deliberate double-tap on an object apart from grabbing it.
 ///
-/// On the headset every pinch on an object starts a system manipulation, and the release of
-/// a short, small pinch is also reported as a tap. Counting taps alone (as a two-tap gesture
-/// does) turns "let go, then quickly grab again" into a double-tap, and a drag that barely
-/// moves into a tap. So the scene reports each pinch's travel and duration here, and taps
-/// are judged against them:
+/// On the headset every pinch on an object starts a system manipulation, which can keep a
+/// tap gesture from ever being recognized. So taps are read from the pinches themselves: the
+/// scene reports each pinch's start, travel, and release here. (Tap gestures that do arrive
+/// are counted only when no pinch already counted them.)
 ///
 /// - A pinch that travels more than `dragDistance`, resizes the object, or lasts longer than
 ///   `maxTapDuration` is a grab. Its release is not a tap, and it cancels any first tap.
@@ -38,8 +37,6 @@ struct ObjectTapArbiter {
         case single
         /// Select the object and change its color.
         case double
-        /// The release of a grab: nothing more to do (the grab already selected it).
-        case grabRelease
     }
 
     private struct Pinch {
@@ -59,6 +56,9 @@ struct ObjectTapArbiter {
     private var lastDragEnd: Date?
     /// A first tap waiting for a second.
     private var pendingTap: (object: ObjectID, time: Date)?
+
+    /// A gesture tap this soon after a pinch on the same object is the same tap, already counted.
+    static let duplicateWindow: TimeInterval = 0.5
 
     /// Whether the current pinch has become a drag.
     var isDragging: Bool { pinch.map { $0.end == nil && $0.isDrag } ?? false }
@@ -83,29 +83,36 @@ struct ObjectTapArbiter {
         return true
     }
 
-    mutating func pinchEnded(on object: ObjectID, at time: Date) {
-        guard var current = pinch, current.object == object, current.end == nil else { return }
+    /// The pinch was let go. A short pinch that didn't move is a tap: returns what it means.
+    /// Nil for a grab.
+    @discardableResult
+    mutating func pinchEnded(on object: ObjectID, at time: Date) -> TapKind? {
+        guard var current = pinch, current.object == object, current.end == nil else { return nil }
         current.end = time
         if current.duration(at: time) > Self.maxTapDuration { current.isDrag = true }
+        pinch = current
         if current.isDrag {
             lastDragEnd = time
             pendingTap = nil
+            return nil
         }
-        pinch = current
+        return register(tapOn: object, at: time, isRegrab: current.isRegrab)
     }
 
-    /// A tap was recognized on `object`. Taps arrive on release, just before or after the
-    /// pinch that made them ends.
-    mutating func tap(on object: ObjectID, at time: Date) -> TapKind {
-        if let current = pinch, current.object == object {
-            if current.isDrag || current.duration(at: time) > Self.maxTapDuration {
-                pendingTap = nil
-                return .grabRelease
-            }
-            if current.isRegrab {
-                pendingTap = nil
-                return .single
-            }
+    /// A tap reported by the tap gesture. On the headset each tap also arrives as a pinch, which
+    /// already counted it; this only counts taps that never started a pinch.
+    mutating func gestureTap(on object: ObjectID, at time: Date) -> TapKind? {
+        if let current = pinch, current.object == object,
+           current.end.map({ time.timeIntervalSince($0) < Self.duplicateWindow }) ?? true {
+            return nil
+        }
+        return register(tapOn: object, at: time, isRegrab: false)
+    }
+
+    private mutating func register(tapOn object: ObjectID, at time: Date, isRegrab: Bool) -> TapKind {
+        if isRegrab {
+            pendingTap = nil
+            return .single
         }
         if let pending = pendingTap, pending.object == object,
            time.timeIntervalSince(pending.time) <= Self.doubleTapInterval,

@@ -24,6 +24,39 @@ struct Keyframe: Identifiable {
     var holds = false
     /// Objects in a character's hand at this keyframe.
     var heldProps: [ObjectID: Hold] = [:]
+    /// This shot begins a new scene. The first shot always does.
+    var startsScene = false
+    /// The scene's title, such as "Kitchen, Night". Kept on the shot that starts the scene.
+    var sceneTitle = ""
+}
+
+/// A shot's storyboard label: its scene number and its letter within the scene, like "1A".
+struct ShotLabel: Equatable {
+    var scene: Int
+    /// 0 for A, 1 for B, and so on.
+    var shot: Int
+
+    var code: String { "\(scene)\(Self.letters(for: shot))" }
+
+    /// A, B, … Z, then AA, AB, …
+    static func letters(for index: Int) -> String {
+        let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        var index = index
+        var result = ""
+        repeat {
+            result = String(alphabet[index % 26]) + result
+            index = index / 26 - 1
+        } while index >= 0
+        return result
+    }
+}
+
+/// One scene of the storyboard: its number, title, and shots in order.
+struct StoryboardScene: Identifiable {
+    var number: Int
+    var title: String
+    var shots: [Keyframe]
+    var id: Keyframe.ID { shots[0].id }
 }
 
 /// An ordered list of keyframes, each at its own time, with eased interpolation between them.
@@ -146,11 +179,74 @@ struct KeyframeTimeline {
         keyframes[index].note = note
     }
 
+    // MARK: Scenes
+
+    /// Starts a new scene at this shot, or folds it back into the scene before. The first shot
+    /// always starts scene 1.
+    mutating func setStartsScene(_ starts: Bool, for id: Keyframe.ID) {
+        guard let index = index(of: id), index > 0 else { return }
+        keyframes[index].startsScene = starts
+        if !starts { keyframes[index].sceneTitle = "" }
+    }
+
+    /// Names the scene that `id` belongs to.
+    mutating func setSceneTitle(_ title: String, forSceneContaining id: Keyframe.ID) {
+        guard let start = sceneStartIndex(containing: id) else { return }
+        keyframes[start].sceneTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func startsScene(at index: Int) -> Bool {
+        index == 0 || keyframes[index].startsScene
+    }
+
+    private func sceneStartIndex(containing id: Keyframe.ID) -> Int? {
+        guard let index = index(of: id) else { return nil }
+        return (0...index).last { startsScene(at: $0) }
+    }
+
+    /// The storyboard's scenes in order.
+    var scenes: [StoryboardScene] {
+        var result: [StoryboardScene] = []
+        for (index, keyframe) in keyframes.enumerated() {
+            if startsScene(at: index) || result.isEmpty {
+                result.append(StoryboardScene(number: result.count + 1, title: keyframe.sceneTitle, shots: [keyframe]))
+            } else {
+                result[result.count - 1].shots.append(keyframe)
+            }
+        }
+        return result
+    }
+
+    /// Every shot's label, like 1A, 1B, 2A.
+    var labels: [Keyframe.ID: ShotLabel] {
+        var result: [Keyframe.ID: ShotLabel] = [:]
+        for scene in scenes {
+            for (shot, keyframe) in scene.shots.enumerated() {
+                result[keyframe.id] = ShotLabel(scene: scene.number, shot: shot)
+            }
+        }
+        return result
+    }
+
+    func label(of id: Keyframe.ID) -> ShotLabel? {
+        guard let index = index(of: id) else { return nil }
+        var scene = 0, shot = 0
+        for i in 0...index {
+            if startsScene(at: i) { scene += 1; shot = 0 } else { shot += 1 }
+        }
+        return ShotLabel(scene: scene, shot: shot)
+    }
+
     /// Removes a keyframe and closes the gap it leaves: everything after it moves earlier
     /// by the time it held, so the remaining timing is unchanged.
     mutating func remove(_ id: Keyframe.ID) {
         guard let index = index(of: id) else { return }
         let gap = index + 1 < keyframes.count ? keyframes[index + 1].time - keyframes[index].time : 0
+        // Removing a scene's first shot hands the scene (and its title) to its next shot.
+        if startsScene(at: index), index + 1 < keyframes.count, !keyframes[index + 1].startsScene {
+            keyframes[index + 1].startsScene = true
+            keyframes[index + 1].sceneTitle = keyframes[index].sceneTitle
+        }
         keyframes.remove(at: index)
         for later in keyframes.indices where later >= index {
             keyframes[later].time -= gap
@@ -162,8 +258,21 @@ struct KeyframeTimeline {
     mutating func move(_ id: Keyframe.ID, to index: Int) {
         guard let from = self.index(of: id) else { return }
         let times = keyframes.map(\.time)
+        // A moved shot joins the scene it's dropped into; its old scene keeps going without it.
+        if startsScene(at: from), from + 1 < keyframes.count, !keyframes[from + 1].startsScene {
+            keyframes[from + 1].startsScene = true
+            keyframes[from + 1].sceneTitle = keyframes[from].sceneTitle
+        }
+        keyframes[from].startsScene = false
+        keyframes[from].sceneTitle = ""
         let keyframe = keyframes.remove(at: from)
-        keyframes.insert(keyframe, at: min(max(index, 0), keyframes.count))
+        let destination = min(max(index, 0), keyframes.count)
+        keyframes.insert(keyframe, at: destination)
+        // Moved to the very front: it now opens scene 1, which keeps its title.
+        if destination == 0, keyframes.count > 1, !keyframes[1].startsScene {
+            keyframes[0].sceneTitle = keyframes[1].sceneTitle
+            keyframes[1].sceneTitle = ""
+        }
         for position in keyframes.indices {
             keyframes[position].time = times[position]
         }

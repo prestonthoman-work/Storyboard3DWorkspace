@@ -46,8 +46,9 @@ nonisolated struct ObjectDesign: Codable, Equatable {
 /// poseable characters, prompts that just name a built-in object ("a red house") use it, and
 /// bases use the built-in templates.
 ///
-/// Without an API key, or when a request fails, prompts are matched like sample mode and the
-/// note says why.
+/// Without an API key, prompts are matched like sample mode. With one, a failed request
+/// throws its reason (a bad key, no credit, a timeout) instead of placing a stand-in, so the
+/// person sees what went wrong and can try again.
 struct ClaudeModelGenerationService: ModelGenerationService {
     typealias Designer = (_ prompt: String, _ apiKey: String) async throws -> ObjectDesign
 
@@ -79,12 +80,13 @@ struct ClaudeModelGenerationService: ModelGenerationService {
             let design = try await design(prompt, key)
             parts = GeneratedObjectBuilder.fit(design.unfittedParts)
             name = Self.cleanName(design.name, prompt: prompt)
+        } catch let failure as ClaudeClient.Failure {
+            throw failure
         } catch {
-            let reason = (error as? ClaudeClient.Failure)?.message ?? "Couldn't reach Claude."
-            return try await fallback(prompt: prompt, reason: reason)
+            throw ClaudeClient.Failure(message: "Couldn't reach Claude. Check your internet connection.")
         }
         guard !parts.isEmpty else {
-            return try await fallback(prompt: prompt, reason: "Claude didn't return any shapes.")
+            throw ClaudeClient.Failure(message: "Claude didn't return any shapes for that. Try describing it differently.")
         }
 
         return GeneratedModel(
@@ -184,8 +186,9 @@ struct ClaudeClient {
     static let model = "claude-opus-5-5"
 
     /// A failure with a short explanation to show under the prompt.
-    struct Failure: Error {
+    struct Failure: LocalizedError {
         let message: String
+        var errorDescription: String? { message }
     }
 
     var session: URLSession = .shared
@@ -203,7 +206,8 @@ struct ClaudeClient {
             // If a safety classifier declines, the API retries on Anthropic's recommended model.
             "fallbacks": "default"
         ]
-        var request = URLRequest(url: Self.endpoint, timeoutInterval: 180)
+        // The answer arrives all at once when the design is done, so allow a few minutes.
+        var request = URLRequest(url: Self.endpoint, timeoutInterval: 300)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
@@ -213,6 +217,21 @@ struct ClaudeClient {
 
         let data = try await send(request)
         return try Self.parse(data)
+    }
+
+    /// Checks a key with the free Models endpoint, so a bad key is caught when it's entered
+    /// rather than on the first generation. Nil when the key works.
+    func verify(apiKey: String) async -> String? {
+        var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/models?limit=1")!, timeoutInterval: 20)
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2026-10-21", forHTTPHeaderField: "anthropic-version")
+        do {
+            let (data, response) = try await session.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            return status == 200 ? nil : Self.message(forStatus: status, body: data)
+        } catch {
+            return "Couldn't reach Claude to check the key. Check your internet connection."
+        }
     }
 
     /// Sends the request, retrying briefly when the API is busy.
@@ -244,7 +263,7 @@ struct ClaudeClient {
 
     static func message(forStatus status: Int, body: Data) -> String {
         switch status {
-        case 401: return "Claude didn't accept the API key. Check it in the Objects panel."
+        case 401: return "Claude didn't accept the API key. Check it under Claude API Key in the Objects tab."
         case 402: return "The Claude account is out of credit."
         case 403: return "This API key isn't allowed to use Claude."
         case 429: return "Claude's usage limit was reached. Try again later."

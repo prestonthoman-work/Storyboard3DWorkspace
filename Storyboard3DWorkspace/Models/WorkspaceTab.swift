@@ -25,7 +25,7 @@ enum WorkspaceTab: Int, Hashable, CaseIterable, Identifiable {
         case .base: "Base"
         case .objects: "Objects"
         case .animate: "Animate"
-        case .photos: "Photos"
+        case .photos: "Camera"
         }
     }
 
@@ -43,8 +43,8 @@ enum WorkspaceTab: Int, Hashable, CaseIterable, Identifiable {
         switch self {
         case .base: "Put the base on your table, then pick its surface, size, and backdrop."
         case .objects: "Add objects and characters, then pinch and drag them into place."
-        case .animate: "Save each shot as a keyframe and take its photo."
-        case .photos: "Take free shots and browse every photo in this project."
+        case .animate: "Save each shot, then frame it and take its photo."
+        case .photos: "Take photos, and open the library of every photo in the project."
         }
     }
 }

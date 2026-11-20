@@ -5,13 +5,10 @@
 
 import SwiftUI
 
-/// Lighting, camera (lens, format, depth of field, film grade), and the shutter button, shared by the
-/// Animate and Capture tabs.
-/// While the self-timer runs, the shutter becomes a Cancel button showing the count.
+/// Lighting and camera (lens, format, depth of field, film grade), shared by the Animate and
+/// Camera tabs. Photos are taken with the one shutter, under the control panel.
 struct CaptureControls: View {
     @Environment(AppModel.self) private var appModel
-    var shutterTitle = "Capture"
-    let shutter: () -> Void
     @State private var isShowingCameraSettings = false
 
     private var cameraSummary: String {
@@ -51,25 +48,6 @@ struct CaptureControls: View {
             }
 
             Spacer(minLength: 0)
-
-            if let remaining = appModel.captureCountdown {
-                Button {
-                    appModel.cancelCapture()
-                } label: {
-                    Label("Cancel \(remaining)", systemImage: "xmark")
-                        .monospacedDigit()
-                        .contentTransition(.numericText(countsDown: true))
-                }
-                .buttonStyle(.bordered)
-            } else {
-                Button(action: shutter) {
-                    Label(shutterTitle, systemImage: "camera.fill")
-                        .symbolEffect(.bounce, value: appModel.photos.photos.count)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!appModel.canCapture)
-                .transition(.opacity.combined(with: .scale(scale: 0.9)))
-            }
         }
         .animation(.snappy, value: appModel.captureCountdown == nil)
     }
@@ -209,9 +187,9 @@ struct CaptureStatusLine: View {
     private var status: some View {
         switch appModel.captureStatus {
         case .attached(let number):
-            StatusMessage("Added to keyframe \(number)", kind: .success)
+            StatusMessage("Added to shot \(appModel.shotCode(number: number))", kind: .success)
         case .retaken(let number):
-            StatusMessage("Retook keyframe \(number)'s photo from the same angle", kind: .success)
+            StatusMessage("Retook shot \(appModel.shotCode(number: number))'s photo from the same angle", kind: .success)
         case .libraryOnly:
             StatusMessage("Saved to the library", symbol: "photo.on.rectangle")
         case .saved:
