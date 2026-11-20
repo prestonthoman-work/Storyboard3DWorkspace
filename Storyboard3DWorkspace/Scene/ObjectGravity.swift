@@ -13,6 +13,9 @@ struct ObjectGravityComponent: Component {
     /// True while a character holds the object: it follows the hand instead of falling,
     /// and nothing rests on it.
     var isAttached = false
+    /// True while a selection handle turns, tilts, or resizes the object: it hangs where it
+    /// is until the handle is let go, then settles.
+    var isTurning = false
     var fallSpeed: Float = 0
 }
 
@@ -60,7 +63,7 @@ struct ObjectGravitySystem: System {
             if gap < 0 {
                 object.position.y -= gap
                 gravity.fallSpeed = 0
-            } else if !gravity.isHeld && !Self.isFallingPaused && gap > 0.0005 {
+            } else if !gravity.isHeld && !gravity.isTurning && !Self.isFallingPaused && gap > 0.0005 {
                 gravity.fallSpeed += Self.gravity * deltaTime
                 let drop = min(gravity.fallSpeed * deltaTime, gap)
                 object.position.y -= drop

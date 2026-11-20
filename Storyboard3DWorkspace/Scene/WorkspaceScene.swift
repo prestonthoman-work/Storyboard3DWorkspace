@@ -55,15 +55,30 @@ final class WorkspaceScene {
     /// Lines shown while an object snaps into line with another.
     private let guideAlongX = ModelEntity()
     private let guideAlongZ = ModelEntity()
+    /// Where a moving object will land if let go now, when that's a snapped spot.
+    private let snapFootprint = ModelEntity()
     private var handleDrag: HandleDrag?
+    /// The object being moved by hand, and its position snapping.
+    private var move: (object: Entity, snapper: AlignmentSnapper)?
 
     private struct HandleDrag {
         var kind: SelectionHandleComponent.Kind
         var object: Entity
+        /// The pointer's angle around the ring when the drag began.
         var startAngle: Float
         var startDistance: Float
-        var startOrientation: simd_quatf
-        var startYaw: Float
+        /// The object's transform when the drag began; every update starts again from it,
+        /// so nothing accumulates or drifts.
+        var startTransform: Transform
+        /// What the object turns about: its center (world space), and the ring's axis.
+        var pivot: SIMD3<Float>
+        /// The center of the ring being dragged (world space), which the pointer's angle is
+        /// measured around, so the object follows the hand around the ring as drawn.
+        var ringCenter: SIMD3<Float>
+        var axis: SIMD3<Float>
+        /// For the tilt ring: the ring's plane, as forward and up directions (world space).
+        var planeForward: SIMD3<Float>
+        var planeUp: SIMD3<Float>
         var startScale: Float
         var lastSnappedStep: Int?
     }
@@ -102,10 +117,10 @@ final class WorkspaceScene {
         root.addChild(baseAnchor)
 
         selectionIndicator.name = Self.selectionIndicatorName
-        var indicatorMaterial = UnlitMaterial(color: .white)
-        indicatorMaterial.blending = .transparent(opacity: 0.4)
-        selectionIndicator.model = ModelComponent(mesh: .generateCylinder(height: 0.0015, radius: 1),
-                                                  materials: [indicatorMaterial])
+        selectionIndicator.model = ModelComponent(
+            mesh: .generateCylinder(height: 0.0015, radius: 1),
+            materials: [InteractionStyle.unlit(InteractionStyle.selection,
+                                               opacity: InteractionStyle.selectionDiscOpacity(isHeld: false))])
 
         previewLights.name = "PreviewLights"
         previewEnvironment.name = "PreviewEnvironment"
@@ -120,14 +135,23 @@ final class WorkspaceScene {
         onionRoot.name = Self.onionSkinName
         objectsContainer.addChild(onionRoot)
 
-        var guideMaterial = UnlitMaterial(color: UIColor(red: 0.45, green: 0.85, blue: 1, alpha: 1))
-        guideMaterial.blending = .transparent(opacity: 0.9)
+        // Snap previews: a faint line through both centers, and a faint outline where the
+        // object will land if let go now.
+        let guideMaterial = InteractionStyle.unlit(InteractionStyle.selection, opacity: 0.6)
         for guide in [guideAlongX, guideAlongZ] {
             guide.name = "AlignmentGuide"
             guide.model = ModelComponent(mesh: .generateBox(size: 1), materials: [guideMaterial])
             guide.isEnabled = false
             root.addChild(guide)
         }
+        var footprint = MeshBuilder()
+        footprint.addRing(innerRadius: 0.92, outerRadius: 1, segments: 64)
+        snapFootprint.name = "SnapFootprint"
+        if let mesh = footprint.makeMesh(named: "SnapFootprint") {
+            snapFootprint.model = ModelComponent(mesh: mesh, materials: [InteractionStyle.unlit(InteractionStyle.selection, opacity: 0.45)])
+        }
+        snapFootprint.isEnabled = false
+        root.addChild(snapFootprint)
 
         backdrop.name = "Backdrop"
         backdrop.isEnabled = false
@@ -515,7 +539,7 @@ final class WorkspaceScene {
         guard spin.map({ !$0.isDragging && $0.velocity == 0 }) ?? true else { return false }
         return objects.filter(\.isEnabled).allSatisfy { object in
             guard let gravity = object.components[ObjectGravityComponent.self] else { return true }
-            return !gravity.isHeld && gravity.fallSpeed == 0
+            return !gravity.isHeld && !gravity.isTurning && gravity.fallSpeed == 0
         }
     }
 
@@ -562,6 +586,13 @@ final class WorkspaceScene {
         )
         if var manipulation = object.components[ManipulationComponent.self] {
             manipulation.releaseBehavior = .stay
+            // Grabbing moves; it never turns. A twist of the wrist mid-move used to tip objects
+            // over, and a second hand could spin them on any axis. Turning and tilting now take
+            // the rings, on purpose. A second hand still resizes.
+            manipulation.dynamics.primaryRotationBehavior = .none
+            manipulation.dynamics.secondaryRotationBehavior = .none
+            // Placed objects stop where you let go (then settle under gravity) instead of sliding on.
+            manipulation.dynamics.inertia = .zero
             object.components.set(manipulation)
         }
         object.components.set(ObjectGravityComponent())
@@ -668,42 +699,66 @@ final class WorkspaceScene {
 
     // MARK: Handles
 
-    /// Turns or resizes the selected object as its handle is dragged to `point` (world space).
+    /// Turns, tilts, or resizes the selected object as its handle is dragged to `point`
+    /// (world space).
+    ///
+    /// Turning and tilting pivot about the object's center, so it spins in place instead of
+    /// swinging around its origin. Axes are worked out in world space and converted into the
+    /// base's space, so the rings behave the same after the base has been spun.
+    /// - Parameter snapping: Rotation detents: click onto 15° steps when close to one.
     /// - Returns: The object, on the first update of a drag, so the caller can record undo.
     @discardableResult
     func dragHandle(_ handle: Entity, to point: SIMD3<Float>, snapping: Bool) -> Entity? {
-        guard let kind = handle.components[SelectionHandleComponent.self]?.kind, let object = handles.target else { return nil }
-        let pivot = handles.pivot
-        let offset = point - pivot
-        let angle = atan2(-offset.z, offset.x)
+        guard let kind = handle.components[SelectionHandleComponent.self]?.kind, let object = handles.target,
+              let parent = object.parent else { return nil }
 
         // The first update only starts the drag, so undo records the pose before any change.
         guard var drag = handleDrag, drag.object == object else {
-            handleDrag = HandleDrag(kind: kind, object: object, startAngle: angle,
-                                    startDistance: max(simd_length(offset), 0.005),
-                                    startOrientation: object.orientation, startYaw: Self.yaw(of: object.orientation),
-                                    startScale: object.scale.x)
+            let pivot = kind == .scale ? handles.pivot : Self.center(of: object)
+            let up = SIMD3<Float>(0, 1, 0)
+            let axis = kind == .tilt ? handles.tiltAxis : up
+            // In the tilt ring's plane, turning about `axis` carries `forward` toward `up`.
+            let forward = kind == .tilt ? simd_normalize(simd_cross(up, axis)) : SIMD3<Float>(1, 0, 0)
+            var start = HandleDrag(kind: kind, object: object, startAngle: 0,
+                                   startDistance: max(simd_length(point - handles.pivot), 0.005),
+                                   startTransform: object.transform, pivot: pivot,
+                                   ringCenter: kind == .tilt ? pivot : handles.pivot, axis: axis,
+                                   planeForward: forward, planeUp: up, startScale: object.scale.x)
+            start.startAngle = Self.pointerAngle(point, in: start)
+            if kind != .scale {
+                start.lastSnappedStep = RotationDetent.apply(Self.absoluteAngle(of: object, in: start)).step
+            }
+            handleDrag = start
+            setTurning(true, object)
+            handles.setActive(kind)
             SoundEffects.play(.grab, on: object, gain: -14)
             return object
         }
 
         switch drag.kind {
-        case .rotate:
-            var delta = angle - drag.startAngle
+        case .rotate, .tilt:
+            var delta = Self.pointerAngle(point, in: drag) - drag.startAngle
             delta = atan2(sin(delta), cos(delta))
             if snapping {
-                // Snap the absolute heading (relative to the base) to 15° steps, ticking on each step.
-                let step = Float.pi / 12
-                let steps = Int(((drag.startYaw + delta) / step).rounded())
-                delta = Float(steps) * step - drag.startYaw
-                if drag.lastSnappedStep != steps {
-                    if drag.lastSnappedStep != nil { SoundEffects.play(.tick, on: object, gain: -24, pitchVariation: 0) }
-                    drag.lastSnappedStep = steps
+                // Detents on the absolute angle (heading on the base, or lean from upright), so
+                // 0° and every 15° step are easy to hit and everything between stays reachable.
+                let base = Self.absoluteAngle(of: object, in: drag)
+                let detent = RotationDetent.apply(base + delta)
+                delta = detent.angle - base
+                // Tick when clicking onto a step (not on leaving one).
+                if detent.step != drag.lastSnappedStep {
+                    if detent.step != nil { SoundEffects.play(.tick, on: object, gain: -24, pitchVariation: 0) }
+                    drag.lastSnappedStep = detent.step
                 }
             }
-            object.orientation = simd_quatf(angle: delta, axis: [0, 1, 0]) * drag.startOrientation
+            let axis = simd_normalize(parent.convert(direction: drag.axis, from: nil))
+            let pivot = parent.convert(position: drag.pivot, from: nil)
+            let turn = simd_quatf(angle: delta, axis: axis)
+            object.orientation = turn * drag.startTransform.rotation
+            object.position = pivot + turn.act(drag.startTransform.translation - pivot)
+            handles.setActive(drag.kind, angle: delta)
         case .scale:
-            let ratio = simd_length(offset) / drag.startDistance
+            let ratio = simd_length(point - handles.pivot) / drag.startDistance
             let scale = min(max(drag.startScale * ratio, Self.scaleRange.lowerBound), Self.scaleRange.upperBound)
             object.scale = SIMD3(repeating: scale)
         }
@@ -713,63 +768,170 @@ final class WorkspaceScene {
     }
 
     func endHandleDrag() {
+        if let drag = handleDrag { setTurning(false, drag.object) }
+        handles.setActive(nil)
         handleDrag = nil
     }
 
-    // MARK: Snapping
+    /// The pointer's angle around the ring being dragged, in the ring's own plane.
+    private static func pointerAngle(_ point: SIMD3<Float>, in drag: HandleDrag) -> Float {
+        let offset = point - drag.ringCenter
+        switch drag.kind {
+        case .tilt: return atan2(simd_dot(offset, drag.planeUp), simd_dot(offset, drag.planeForward))
+        case .rotate, .scale: return atan2(-offset.z, offset.x)
+        }
+    }
 
-    /// While an object is moved: turns it to the nearest 15° (when upright) and lines its
-    /// center up with any other object it's close to on either axis, showing a guide line.
-    func applySnapping(to entity: Entity) {
+    /// The object's angle when the drag began, about the ring's axis: its heading on the base
+    /// for the turn ring, its lean from upright for the tilt ring.
+    private static func absoluteAngle(of object: Entity, in drag: HandleDrag) -> Float {
+        drag.kind == .tilt ? lean(of: object, startRotation: drag.startTransform.rotation, in: drag)
+                           : yaw(of: drag.startTransform.rotation)
+    }
+
+    /// How far the object leans forward from upright about the tilt axis, in radians.
+    private static func lean(of object: Entity, startRotation: simd_quatf, in drag: HandleDrag) -> Float {
+        guard let parent = object.parent else { return 0 }
+        let world = parent.convert(direction: startRotation.act([0, 1, 0]), to: nil)
+        // Turning about the axis carries `up` toward `-forward`.
+        return atan2(simd_dot(world, -drag.planeForward), simd_dot(world, drag.planeUp))
+    }
+
+    /// The center of an object's grab box, in world space.
+    static func center(of object: Entity) -> SIMD3<Float> {
+        let local = object.components[CollisionComponent.self]?.shapes.first?.bounds.center
+            ?? geometryBounds(of: object)?.center ?? .zero
+        return object.convert(position: local, to: nil)
+    }
+
+    /// Holds an object still against gravity while a ring or the corner handle moves it.
+    private func setTurning(_ isTurning: Bool, _ object: Entity) {
+        guard var gravity = object.components[ObjectGravityComponent.self] else { return }
+        gravity.isTurning = isTurning
+        gravity.fallSpeed = 0
+        object.components.set(gravity)
+    }
+
+    // MARK: Moving by hand
+
+    /// Position snapping for an object being moved: never touches its rotation, never pulls
+    /// it while in the hand. A preview shows where it would line up, and letting go there
+    /// takes it (see `AlignmentSnapper`).
+    func beginMove(of entity: Entity) {
         guard let object = object(containing: entity) else { return }
-
-        let up = object.orientation.act([0, 1, 0])
-        if up.y > 0.985 {
-            let step = Float.pi / 12
-            let snapped = (Self.yaw(of: object.orientation) / step).rounded() * step
-            object.orientation = simd_quatf(angle: snapped, axis: [0, 1, 0])
+        var snapper = AlignmentSnapper()
+        if let center = flatCenter(of: object) {
+            snapper.begin(at: center, neighbors: neighbors(of: object))
         }
+        move = (object, snapper)
+        setSelectionHeld(true)
+    }
 
-        let threshold: Float = 0.008
-        var alignX: (Entity, Float)?
-        var alignZ: (Entity, Float)?
-        for other in objects where other != object && other.isEnabled {
-            let dx = abs(other.position.x - object.position.x)
-            let dz = abs(other.position.z - object.position.z)
-            if dx < threshold, dx < (alignX?.1 ?? .infinity) { alignX = (other, dx) }
-            if dz < threshold, dz < (alignZ?.1 ?? .infinity) { alignZ = (other, dz) }
+    /// Updates the snap preview as the object moves. `snapping` is false when snapping is
+    /// off or bypassed for the moment.
+    func updateMove(of entity: Entity, snapping: Bool) {
+        guard let object = object(containing: entity), var current = move, current.object == object,
+              let center = flatCenter(of: object) else { return }
+        let isAttached = object.components[ObjectGravityComponent.self]?.isAttached ?? false
+        let targets = current.snapper.update(position: center,
+                                             neighbors: snapping && !isAttached ? neighbors(of: object) : [])
+        move = current
+        showSnapPreview(for: object, center: center, targets: targets)
+    }
+
+    /// The object was let go. Lands it on the previewed alignment, if any.
+    /// - Returns: True if it snapped.
+    @discardableResult
+    func endMove(of entity: Entity, snapping: Bool) -> Bool {
+        defer {
+            move = nil
+            hideGuides()
+            setSelectionHeld(false)
         }
-        if let (other, _) = alignX { object.position.x = other.position.x }
-        if let (other, _) = alignZ { object.position.z = other.position.z }
+        guard let object = object(containing: entity), let current = move, current.object == object, snapping,
+              !current.snapper.targets.isEmpty, let center = flatCenter(of: object) else { return false }
+        let landing = current.snapper.snapped(center)
+        object.position.x += landing.x - center.x
+        object.position.z += landing.y - center.y
+        ObjectGravitySystem.keepAboveSurface(object)
+        SoundEffects.play(.tick, on: object, gain: -22, pitchVariation: 0)
+        return true
+    }
 
-        showGuide(guideAlongZ, from: object, to: alignX?.0, axis: 2)
-        showGuide(guideAlongX, from: object, to: alignZ?.0, axis: 0)
+    /// The center of an object's grab box on the base, as (x, z) in the objects container.
+    private func flatCenter(of object: Entity) -> SIMD2<Float>? {
+        guard let local = object.components[CollisionComponent.self]?.shapes.first?.bounds.center else { return nil }
+        let center = object.convert(position: local, to: objectsContainer)
+        return SIMD2(center.x, center.z)
+    }
+
+    private func neighbors(of object: Entity) -> [AlignmentSnapper.Neighbor] {
+        objects.compactMap { other in
+            guard other != object, other.isEnabled,
+                  !(other.components[ObjectGravityComponent.self]?.isAttached ?? false),
+                  let id = objectID(of: other), let center = flatCenter(of: other) else { return nil }
+            return (id, center)
+        }
+    }
+
+    /// A faint line through both centers for each alignment on offer, and a faint outline
+    /// where the object would land.
+    private func showSnapPreview(for object: Entity, center: SIMD2<Float>, targets: [AlignmentSnapper.Axis: AlignmentSnapper.Target]) {
+        guard !targets.isEmpty else {
+            hideGuides()
+            return
+        }
+        var landing = center
+        if let x = targets[.x] { landing.x = x.value }
+        if let z = targets[.z] { landing.y = z.value }
+        let other = { (axis: AlignmentSnapper.Axis) -> SIMD2<Float>? in
+            targets[axis].flatMap { target in self.object(withID: target.object) }.flatMap(self.flatCenter)
+        }
+        // Lining up x runs a guide along z, and the other way round.
+        showGuide(guideAlongZ, from: landing, to: other(.x), axis: 2)
+        showGuide(guideAlongX, from: landing, to: other(.z), axis: 0)
+
+        let bounds = object.components[CollisionComponent.self]?.shapes.first?.bounds ?? BoundingBox()
+        let scale = object.scale.x
+        let radius = max(bounds.extents.x, bounds.extents.z) * 0.5 * scale + 0.004
+        let bottom = object.convert(position: [bounds.center.x, bounds.min.y, bounds.center.z], to: objectsContainer).y
+        snapFootprint.transform = Transform(matrix: objectsContainer.transformMatrix(relativeTo: nil))
+        snapFootprint.position = objectsContainer.convert(position: [landing.x, bottom + 0.0012, landing.y], to: nil)
+        snapFootprint.scale = [radius, 1, radius]
+        snapFootprint.isEnabled = true
     }
 
     func hideGuides() {
         guideAlongX.isEnabled = false
         guideAlongZ.isEnabled = false
+        snapFootprint.isEnabled = false
     }
 
-    /// A thin line on the base surface through both objects, along the given container axis.
-    private func showGuide(_ guide: ModelEntity, from object: Entity, to other: Entity?, axis: Int) {
+    /// A thin line on the base surface through both centers, along the given container axis.
+    private func showGuide(_ guide: ModelEntity, from point: SIMD2<Float>, to other: SIMD2<Float>?, axis: Int) {
         guard let other else {
             guide.isEnabled = false
             return
         }
-        let a = object.position, b = other.position
+        let a = SIMD3(point.x, 0.0012, point.y), b = SIMD3(other.x, 0.0012, other.y)
         let low = min(a[axis], b[axis]) - 0.03
         let high = max(a[axis], b[axis]) + 0.03
         var center = a
         center[axis] = (low + high) / 2
-        center.y = 0.0012
-        var size = SIMD3<Float>(0.0014, 0.0008, 0.0014)
+        var size = SIMD3<Float>(0.0011, 0.0006, 0.0011)
         size[axis] = high - low
 
         guide.transform = Transform(matrix: objectsContainer.transformMatrix(relativeTo: nil))
         guide.position = objectsContainer.convert(position: center, to: nil)
         guide.scale = size
         guide.isEnabled = true
+    }
+
+    /// The selection disc brightens while the object is in the hand.
+    private func setSelectionHeld(_ isHeld: Bool) {
+        selectionIndicator.model?.materials = [
+            InteractionStyle.unlit(InteractionStyle.selection, opacity: InteractionStyle.selectionDiscOpacity(isHeld: isHeld))
+        ]
     }
 
     /// Heading about the vertical axis, in radians.
@@ -793,6 +955,26 @@ final class WorkspaceScene {
             layout.lift = BackdropLayout.lift(forHeight: size.y)
             backdrop.components.set(layout)
         }
+        // Enabled means "has an image" (captures need it); whether it shows is its opacity.
+        backdrop.components.set(OpacityComponent(opacity: isBackdropShown ? 1 : 0))
         backdrop.isEnabled = true
+    }
+
+    /// Whether the backdrop shows in the room. It stays enabled and keeps following the viewer
+    /// while hidden, so photos, re-shoots, and exports still frame against it.
+    private(set) var isBackdropShown = true
+
+    func setBackdropShown(_ isShown: Bool, animated: Bool) {
+        guard isShown != isBackdropShown else { return }
+        isBackdropShown = isShown
+        let target: Float = isShown ? 1 : 0
+        let current = backdrop.components[OpacityComponent.self]?.opacity ?? (isShown ? 0 : 1)
+        backdrop.components.set(OpacityComponent(opacity: target))
+        guard animated, SceneFeedback.isEnabled, backdrop.isEnabled else { return }
+        let fade = FromToByAnimation<Float>(from: current, to: target, duration: 0.25, timing: .easeInOut,
+                                            bindTarget: .opacity)
+        if let animation = try? AnimationResource.generate(with: fade) {
+            backdrop.playAnimation(animation)
+        }
     }
 }

@@ -4,12 +4,12 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Storyboard 3D listens while you dictate shot notes.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Storyboard 3D turns what you say into shot notes.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Storyboard 3D saves your captured compositions to Photos.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Storyboard 3D turns what you say into shot notes.</string>
 	<key>NSWorldSensingUsageDescription</key>
-	<string>Storyboard 3D finds tables around you so it can place the base on one.</string>
+	<string>Storyboard 3D finds tables around you so it can set the base and the Pose Studio on one.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationPreferredDefaultSceneSessionRole</key>
@@ -27,5 +27,7 @@
 			</array>
 		</dict>
 	</dict>
+	<key>UIWantsDetailedSurfaceInfo</key>
+	<true/>
 </dict>
 </plist>

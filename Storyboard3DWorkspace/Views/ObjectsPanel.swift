@@ -62,9 +62,9 @@ struct ObjectsPanel: View {
             }
 
             HintRow(hints: [
-                ("hand.pinch", "Pinch and drag an object to move it"),
+                ("hand.pinch", "Pinch and drag an object to move it; it keeps its angle"),
                 ("hand.tap", "Double-tap an object to change its color"),
-                ("arrow.trianglehead.clockwise", "Drag the ring's knob to turn it, or the corner to resize"),
+                ("arrow.trianglehead.clockwise", "Drag the flat ring to turn it, the upright arc to tilt it, or the corner to resize"),
             ])
         }
         .alert("Rename Object", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
@@ -139,7 +139,17 @@ struct ObjectsPanel: View {
     private func selectedActions(for object: AppModel.ObjectSummary) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if appModel.canRecolorSelectedObject {
-                ColorSwatches(selected: object.recipe.colorName) { appModel.recolorSelectedObject($0) }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Label("Color", systemImage: "paintpalette")
+                            .font(.callout.weight(.semibold))
+                        Spacer(minLength: 8)
+                        Text("or double-tap it in the room")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    ColorSwatches(selected: object.recipe.colorName) { appModel.recolorSelectedObject($0) }
+                }
             }
             if object.recipe.characterKind != nil {
                 CharacterInspector()

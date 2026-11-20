@@ -244,6 +244,10 @@ private struct BackdropSection: View {
             if let error = appModel.backgroundError {
                 StatusMessage(error, kind: .error)
             }
+
+            Divider()
+            Text("In the room").font(.callout.weight(.semibold))
+            BackdropVisibilityControl(showsTitle: false)
         }
         .onChange(of: photoSelection) { _, item in
             guard let item else { return }

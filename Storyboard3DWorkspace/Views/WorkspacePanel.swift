@@ -78,9 +78,13 @@ private struct WorkspaceOrnament: View {
                 }
                 .help("Light the scene in your space with the \(appModel.captureLighting.name) capture lighting")
                 Toggle(isOn: $appModel.isSnappingOn) {
-                    Label("Snapping", systemImage: "squareshape.split.3x3")
+                    Label("Snap Position", systemImage: "squareshape.split.3x3")
                 }
-                .help("Snap rotation to 15° and line objects up with each other")
+                .help("Line objects up with each other when you let go close to a guide. Never changes rotation. Hold Option on a keyboard to skip it for a moment.")
+                Toggle(isOn: $appModel.isRotationSnappingOn) {
+                    Label("Snap Rotation", systemImage: "angle")
+                }
+                .help("The turn and tilt rings click onto 15° steps when close to one")
                 Toggle(isOn: $appModel.showsObjectLabels) {
                     Label("Labels", systemImage: "tag")
                 }

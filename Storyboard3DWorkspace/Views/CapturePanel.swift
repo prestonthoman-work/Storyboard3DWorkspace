@@ -21,6 +21,7 @@ struct CapturePanel: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 CaptureTargetLine()
+                BackdropVisibilityControl()
                 CaptureControls {
                     appModel.startCapture()
                 }

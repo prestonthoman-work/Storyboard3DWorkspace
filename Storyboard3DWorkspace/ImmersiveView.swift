@@ -49,10 +49,9 @@ struct ImmersiveView: View {
                     }
                     appModel.manipulationBegan(on: event.entity)
                 },
+                // Moving previews any alignment; it never changes the object's rotation.
                 content.subscribe(to: ManipulationEvents.DidUpdateTransform.self) { event in
-                    workspace.clampScale(of: event.entity)
-                    if appModel.isSnappingOn { workspace.applySnapping(to: event.entity) }
-                    workspace.keepAboveSurface(event.entity)
+                    appModel.manipulationUpdated(on: event.entity)
                 },
                 // Letting go hands the object to gravity.
                 content.subscribe(to: ManipulationEvents.WillRelease.self) { event in
@@ -60,7 +59,6 @@ struct ImmersiveView: View {
                 },
                 content.subscribe(to: ManipulationEvents.WillEnd.self) { event in
                     workspace.setHeld(false, for: event.entity)
-                    workspace.hideGuides()
                     appModel.manipulationEnded(on: event.entity)
                     // Auto-save the new arrangement into the selected keyframe once it settles.
                     appModel.sceneEdited()
@@ -108,18 +106,17 @@ struct ImmersiveView: View {
                 }
                 .onEnded { _ in appModel.endHandleDrag() }
         )
+        // One tap recognizer for objects. Each tap selects right away; whether it completes a
+        // double-tap (change color) is judged against the grabs around it, so letting go and
+        // quickly grabbing again is never mistaken for one (see `ObjectTapArbiter`).
         .gesture(
             SpatialTapGesture()
                 .targetedToAnyEntity()
-                .onEnded { value in appModel.selectObject(containing: value.entity) }
+                .onEnded { value in appModel.objectTapped(value.entity) }
         )
-        // Double-tap an object to cycle its color. Alongside the single tap, so the first
-        // tap still selects right away instead of waiting to see if a second follows.
-        .simultaneousGesture(
-            SpatialTapGesture(count: 2)
-                .targetedToAnyEntity()
-                .onEnded { value in appModel.cycleColor(ofObjectContaining: value.entity) }
-        )
+        .onChange(of: appModel.isViewfinderVisible) { _, isVisible in
+            appModel.viewfinderVisibilityChanged(isVisible)
+        }
         .task {
             await appModel.workspaceDidOpen()
         }

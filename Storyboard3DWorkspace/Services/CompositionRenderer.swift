@@ -498,6 +498,8 @@ final class CompositionRenderer {
             let copy = live.clone(recursive: false)
             // The copy must hold still: the live system would otherwise re-aim it in the render scene.
             copy.components.remove(ViewerFacingBackdropComponent.self)
+            // The live plane may be faded out in the room between photos; the photo always shows it.
+            copy.components.remove(OpacityComponent.self)
             copy.transform = pose ?? Transform(matrix: live.transformMatrix(relativeTo: nil))
             if var material = copy.model?.materials.first as? UnlitMaterial {
                 material.color.tint = Self.color(tint)

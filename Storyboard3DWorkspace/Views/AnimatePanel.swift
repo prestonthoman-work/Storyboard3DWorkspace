@@ -161,6 +161,7 @@ private struct SelectedKeyframeShot: View {
                     .help("Ease moves everything smoothly to the next keyframe. Hold keeps this pose until the next keyframe, for storyboards made of distinct poses.")
                 }
 
+                BackdropVisibilityControl()
                 CaptureControls(shutterTitle: "Take Photo") {
                     appModel.takePhotoForSelectedKeyframe()
                 }

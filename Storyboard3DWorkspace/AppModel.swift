@@ -23,7 +23,10 @@ class AppModel {
         didSet { capture.isSpaceOpen = immersiveSpaceState == .open }
     }
 
-    var selectedTab: WorkspaceTab = .base
+    var selectedTab: WorkspaceTab = .base {
+        // Leaving the tab a photo was being framed on leaves the camera.
+        didSet { if selectedTab != oldValue { endPhotoWorkflowIfIdle() } }
+    }
 
     /// The person closed the "next step" guide. Remembered across launches.
     var isGuideHidden: Bool = UserDefaults.standard.bool(forKey: "isGuideHidden") {
@@ -113,6 +116,8 @@ class AppModel {
         self.capture = CaptureController(workspace: workspace)
         self.photoSync = PhotoSyncController(workspace: workspace, photos: photos)
         workspace.setEyelinesVisible(showsEyelines)
+        // Before any backdrop image exists, so the first frame already honors the preference.
+        workspace.setBackdropShown(backdropVisibility.isVisible, animated: false)
         workspace.setBase(BaseTemplateBuilder.make(.grass), size: baseMeters)
         refreshProjects()
     }
@@ -400,6 +405,8 @@ class AppModel {
 
     func workspaceDidClose() {
         SceneFeedback.isEnabled = false
+        backdropVisibility.photoWorkflowEnded()
+        refreshBackdropVisibility(animated: false)
         Task { await workspace.setLightingPreview(nil, camera: viewerCamera()) }
         cancelCapture()
         saveNow()
@@ -1178,6 +1185,20 @@ class AppModel {
         }
     }
 
+    /// Tells taps from grabs. Fed by the scene's manipulation events.
+    @ObservationIgnored private var tapArbiter = ObjectTapArbiter()
+
+    /// A tap on an object in the scene: one selects it, a deliberate double-tap also changes
+    /// its color. The release of a grab, or a quick re-grab, never counts toward a double-tap.
+    func objectTapped(_ entity: Entity, at time: Date = .now) {
+        guard let object = workspace.object(containing: entity), let id = workspace.objectID(of: object) else { return }
+        switch tapArbiter.tap(on: id, at: time) {
+        case .single: selectObject(id)
+        case .double: cycleColor(ofObjectContaining: object)
+        case .grabRelease: break
+        }
+    }
+
     /// Double-tap in the scene: selects the object and moves it to the next color, ending
     /// with its original colors before starting over. Objects that can't be recolored
     /// (imported models) are just selected.
@@ -1194,14 +1215,24 @@ class AppModel {
         return index + 1 < names.count ? names[index + 1] : nil
     }
 
-    /// Snap rotation to 15° steps and line objects up with each other while arranging.
+    /// Position snapping: a moved object lines up with nearby objects when let go close to
+    /// one. Never changes its rotation. Remembered across launches.
     var isSnappingOn: Bool = UserDefaults.standard.object(forKey: "isSnappingOn") as? Bool ?? true {
         didSet { UserDefaults.standard.set(isSnappingOn, forKey: "isSnappingOn") }
     }
 
+    /// Rotation snapping: the turn and tilt rings click onto 15° steps when close to one.
+    /// Separate from position snapping. Remembered across launches.
+    var isRotationSnappingOn: Bool = UserDefaults.standard.object(forKey: "isRotationSnappingOn") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(isRotationSnappingOn, forKey: "isRotationSnappingOn") }
+    }
+
+    /// Snapping is skipped while Option is held on a connected keyboard.
+    var isSnappingBypassed: Bool { SnapBypass.isHeld }
+
     /// A selection handle moved to `point` (world space).
     func dragHandle(_ handle: Entity, to point: SIMD3<Float>) {
-        if workspace.dragHandle(handle, to: point, snapping: isSnappingOn) != nil {
+        if workspace.dragHandle(handle, to: point, snapping: isRotationSnappingOn && !isSnappingBypassed) != nil {
             animator.pause()
             checkpoint()
         }
@@ -1227,14 +1258,33 @@ class AppModel {
     }
 
     /// The user grabbed an object: stop playback so it doesn't fight their hands.
-    func manipulationBegan(on entity: Entity) {
+    func manipulationBegan(on entity: Entity, at time: Date = .now) {
         animator.pause()
         checkpoint()
         selectObject(containing: entity)
+        if let object = workspace.object(containing: entity), let id = workspace.objectID(of: object) {
+            tapArbiter.pinchBegan(on: id, at: time, position: object.position(relativeTo: nil), scale: object.scale.x)
+        }
+        workspace.beginMove(of: entity)
     }
 
-    /// The user let go of an object. A held object keeps its new place in the hand.
-    func manipulationEnded(on entity: Entity) {
+    /// The object moved or resized in the hand.
+    func manipulationUpdated(on entity: Entity) {
+        workspace.clampScale(of: entity)
+        if let object = workspace.object(containing: entity), let id = workspace.objectID(of: object) {
+            tapArbiter.pinchMoved(on: id, position: object.position(relativeTo: nil), scale: object.scale.x)
+        }
+        workspace.updateMove(of: entity, snapping: isSnappingOn && !isSnappingBypassed)
+        workspace.keepAboveSurface(entity)
+    }
+
+    /// The user let go of an object: it lands on the previewed alignment, if any. A held
+    /// object keeps its new place in the hand.
+    func manipulationEnded(on entity: Entity, at time: Date = .now) {
+        if let object = workspace.object(containing: entity), let id = workspace.objectID(of: object) {
+            tapArbiter.pinchEnded(on: id, at: time)
+        }
+        workspace.endMove(of: entity, snapping: isSnappingOn && !isSnappingBypassed)
         guard let object = workspace.object(containing: entity),
               var hold = workspace.hold(of: object), let wrist = HeldProps.wrist(for: hold, near: object) else { return }
         hold.offset = CodableTransform(HeldProps.offset(of: object, from: wrist))
@@ -1468,11 +1518,64 @@ class AppModel {
     /// Starts a 3-second self-timer, then captures from wherever the viewer is looking.
     func startCapture() {
         guard canCapture else { return }
+        // The backdrop comes up for the photo (with Hide Between Photos) before the count starts.
+        backdropVisibility.photoStarted()
+        refreshBackdropVisibility()
         capture.startCountdown { [weak self] in await self?.captureComposition() }
     }
 
+    /// Stops the self-timer. The backdrop stays as it is, so the shot can be reframed and
+    /// tried again; leaving the camera hides it.
     func cancelCapture() {
         capture.cancelCountdown()
+    }
+
+    // MARK: Backdrop visibility
+
+    let backdropVisibility = BackdropVisibilityController()
+
+    /// Always Show, or Hide Between Photos. Changing it never touches a photo in progress.
+    var backdropVisibilityPreference: BackdropVisibility {
+        get { backdropVisibility.preference }
+        set {
+            backdropVisibility.preference = newValue
+            refreshBackdropVisibility()
+        }
+    }
+
+    /// Whether the backdrop is in the room right now.
+    var isBackdropVisible: Bool { backdropVisibility.isVisible }
+
+    /// The backdrop is up only for the photo in progress.
+    var isBackdropShownForPhoto: Bool { backdropVisibility.isShownForPhoto }
+
+    /// Show to Frame: brings the backdrop up to line up a shot, without changing the preference.
+    func showBackdropForFraming() {
+        backdropVisibility.photoStarted()
+        refreshBackdropVisibility()
+    }
+
+    /// Hide Now: puts a backdrop shown for a photo away again.
+    func hideBackdropForNow() {
+        guard !capture.isBusy else { return }
+        backdropVisibility.photoWorkflowEnded()
+        refreshBackdropVisibility()
+    }
+
+    /// The viewfinder came up or went away. Going away means the person left the camera.
+    func viewfinderVisibilityChanged(_ isVisible: Bool) {
+        if !isVisible { endPhotoWorkflowIfIdle() }
+    }
+
+    /// Ends a photo in progress unless the shutter is counting down or the photo is developing.
+    private func endPhotoWorkflowIfIdle() {
+        guard backdropVisibility.isPhotoInProgress, !capture.isBusy else { return }
+        backdropVisibility.photoWorkflowEnded()
+        refreshBackdropVisibility()
+    }
+
+    private func refreshBackdropVisibility(animated: Bool = true) {
+        workspace.setBackdropShown(backdropVisibility.isVisible, animated: animated)
     }
 
     /// From the Animate tab: take a photo of the selected keyframe, staying on that tab.
@@ -1501,8 +1604,12 @@ class AppModel {
             guard let photo = photos.add(shot.image, lens: shot.lens, keyframe: target?.keyframe.id, camera: shot.camera,
                                          lighting: shot.lighting, look: shot.look, backdropPose: shot.backdropPose) else {
                 capture.status = .failed("The capture couldn't be saved.")
+                backdropVisibility.photoFailed()
                 return
             }
+            // Taken: with Hide Between Photos, the backdrop goes away again.
+            backdropVisibility.photoTaken()
+            refreshBackdropVisibility()
             selectedLibraryPhotoID = photo.id
             if let target {
                 focusedKeyframePhotoID = photo.id
@@ -1514,6 +1621,8 @@ class AppModel {
             documentChanged()
         } catch {
             capture.status = .failed(error.localizedDescription)
+            // Keep the backdrop up so the same framing can be tried again.
+            backdropVisibility.photoFailed()
         }
     }
 

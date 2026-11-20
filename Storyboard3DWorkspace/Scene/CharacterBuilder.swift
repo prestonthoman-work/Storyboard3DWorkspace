@@ -248,7 +248,7 @@ enum CharacterBuilder {
                     let size = simd_max(bounds.extents * 1.25, SIMD3(repeating: 0.11))
                     entity.components.set(CollisionComponent(shapes: [ShapeResource.generateBox(size: size).offsetBy(translation: bounds.center)]))
                     entity.components.set(InputTargetComponent())
-                    entity.components.set(HoverEffectComponent())
+                    entity.components.set(InteractionStyle.hover)
                 } else {
                     entity.components.remove(CollisionComponent.self)
                     entity.components.remove(InputTargetComponent.self)

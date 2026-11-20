@@ -3,6 +3,7 @@
 //  Storyboard3DWorkspace
 //
 
+import ARKit
 import RealityKit
 import SwiftUI
 
@@ -10,20 +11,30 @@ import SwiftUI
 /// hands. Pinch any body part and drag: arms, legs, torso, and head swing at their joints,
 /// and a hand or foot follows your hand while its arm or leg bends. Drag the floor to look
 /// from another side. Every edit goes straight to the character in the scene.
+///
+/// Set it down on a table by lowering it with the window bar: the system snaps the volume to
+/// the surface, and the stage rests on the tabletop like a miniature. Nothing in the app ever
+/// moves the volume, so it stays exactly where it was set while you pose.
 struct PoseStudioView: View {
     static let windowID = "poseStudio"
 
     @Environment(AppModel.self) private var appModel
+    @Environment(\.surfaceSnappingInfo) private var snapping
     @State private var turnStart: Float?
 
     private var studio: PoseStudioScene { appModel.poseStudio }
 
     var body: some View {
-        RealityView { content in
-            studio.root.removeFromParent()
-            content.add(studio.root)
-        } update: { _ in
-            appModel.updatePoseStudio()
+        GeometryReader3D { proxy in
+            RealityView { content in
+                studio.root.removeFromParent()
+                content.add(studio.root)
+            } update: { content in
+                appModel.updatePoseStudio()
+                // Rest the plinth on the volume's floor, wherever the volume is and however big.
+                let bounds = content.convert(proxy.frame(in: .local), from: .local, to: .scene)
+                studio.setVolumeFloor(bounds.min.y, isEditing: appModel.isPoseDragging)
+            }
         }
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -43,7 +54,10 @@ struct PoseStudioView: View {
                         appModel.swingJoint(joint, from: from, to: to)
                     }
                 }
-                .onEnded { _ in appModel.endPoseDrag() }
+                .onEnded { _ in
+                    appModel.endPoseDrag()
+                    studio.editingEnded()
+                }
         )
         .gesture(
             DragGesture(minimumDistance: 0.005)
@@ -56,7 +70,7 @@ struct PoseStudioView: View {
                 .onEnded { _ in turnStart = nil }
         )
         .ornament(attachmentAnchor: .scene(.trailing), contentAlignment: .leading) {
-            PoseStudioPanel()
+            PoseStudioPanel(placement: StudioPlacement(snapping))
                 .padding(.leading, 20)
         }
         .onAppear {
@@ -80,6 +94,7 @@ struct PoseStudioView: View {
 private struct PoseStudioPanel: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismissWindow) private var dismissWindow
+    let placement: StudioPlacement
 
     var body: some View {
         ScrollView {
@@ -103,6 +118,8 @@ private struct PoseStudioPanel: View {
                     .buttonStyle(.borderedProminent)
                     .help("Close the Pose Studio and go back to the Objects tab")
                 }
+
+                PlacementCard(placement: placement)
 
                 HStack(spacing: 8) {
                     CharacterPicker()
@@ -538,6 +555,106 @@ private struct LimbControls: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(width: 50, alignment: .trailing)
+        }
+    }
+}
+
+// MARK: Placement
+
+/// Where the studio is: on a table, on another surface, or floating, from the system's
+/// surface snapping. Telling a table from other surfaces needs permission to sense the
+/// surroundings; without it the studio still snaps, it just can't say what it's on.
+struct StudioPlacement: Equatable {
+    enum State: Equatable {
+        case floating
+        case onTable
+        /// Snapped to something that isn't a table, such as the floor or a seat.
+        case onOther(String)
+        /// Snapped, but what to isn't known (no permission yet, or not classified).
+        case onSurface
+    }
+
+    var state: State
+    var canClassify: Bool
+
+    init(_ info: SurfaceSnappingInfo) {
+        self.init(isSnapped: info.isSnapped, classification: info.classification,
+                  authorization: SurfaceSnappingInfo.authorizationStatus)
+    }
+
+    init(isSnapped: Bool, classification: SurfaceClassification?, authorization: SurfaceSnappingInfo.AuthorizationStatus) {
+        canClassify = authorization == .authorized || authorization == .notDetermined
+        guard isSnapped else {
+            state = .floating
+            return
+        }
+        switch classification {
+        case .table: state = .onTable
+        case .floor: state = .onOther("the floor")
+        case .seat: state = .onOther("a seat")
+        default: state = .onSurface
+        }
+    }
+}
+
+/// One line on where the studio is, and how to move it or set it on a table.
+private struct PlacementCard: View {
+    let placement: StudioPlacement
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol)
+                .font(.title3)
+                .foregroundStyle(tint)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.callout.weight(.semibold))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: UI.smallCorner, style: .continuous))
+        .animation(.snappy, value: placement)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var symbol: String {
+        switch placement.state {
+        case .onTable: "checkmark.circle.fill"
+        case .onOther, .onSurface: "square.stack.3d.down.forward"
+        case .floating: "arrow.down.to.line"
+        }
+    }
+
+    private var tint: Color {
+        placement.state == .onTable ? .green : .secondary
+    }
+
+    private var title: String {
+        switch placement.state {
+        case .onTable: "On the table"
+        case .onOther(let surface): "Resting on \(surface)"
+        case .onSurface: "Resting on a surface"
+        case .floating: "Floating"
+        }
+    }
+
+    private var detail: String {
+        switch placement.state {
+        case .onTable:
+            return "It stays put while you pose. To move it, drag the bar under the stage."
+        case .onOther:
+            return "For a tabletop miniature, drag the bar under the stage onto a table."
+        case .onSurface:
+            return placement.canClassify
+                ? "It stays put while you pose. To move it, drag the bar under the stage."
+                : "To tell tables from other surfaces, allow Storyboard 3D to sense your surroundings in Settings. It stays put either way."
+        case .floating:
+            return "To set it on a table, drag the bar under the stage down to the tabletop until it settles, then let go. Or leave it floating wherever is comfortable."
         }
     }
 }
